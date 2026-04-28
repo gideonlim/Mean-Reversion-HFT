@@ -5,6 +5,7 @@ a mock Broker, and so future broker swaps don't reach into other modules.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -14,6 +15,8 @@ from alpaca.trading.enums import OrderSide, QueryOrderStatus, TimeInForce
 from alpaca.trading.requests import GetOrdersRequest, MarketOrderRequest
 
 from config import ET
+
+log = logging.getLogger(__name__)
 
 
 # MOC submission window is [close - 25min, close - 11min].
@@ -90,7 +93,10 @@ class Broker:
             if "position does not exist" in str(e).lower() or "404" in str(e):
                 return 0
             raise
-        return int(float(pos.qty_available if hasattr(pos, "qty_available") else pos.qty))
+        qty = int(float(pos.qty_available if hasattr(pos, "qty_available") else pos.qty))
+        if str(getattr(pos, "side", "")).lower() == "short":
+            qty = -qty
+        return qty
 
     # ---- Orders --------------------------------------------------------
 
@@ -103,8 +109,8 @@ class Broker:
             try:
                 self._client.cancel_order_by_id(o.id)
                 n += 1
-            except APIError:
-                pass
+            except APIError as e:
+                log.debug("cancel_order_by_id(%s) failed: %s", o.id, e)
         return n
 
     def submit_moc(

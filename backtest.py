@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 import matplotlib
@@ -34,7 +34,10 @@ def main() -> int:
         return 2
 
     today = et_today()
-    start = date(today.year - SETTINGS.LOOKBACK_YEARS, today.month, today.day)
+    try:
+        start = date(today.year - SETTINGS.LOOKBACK_YEARS, today.month, today.day)
+    except ValueError:
+        start = date(today.year - SETTINGS.LOOKBACK_YEARS, today.month, today.day - 1)
     print(f"Fetching daily bars for {SETTINGS.SYMBOL} from {start} to {today}...")
 
     client = StockHistoricalDataClient(api_key, api_secret)

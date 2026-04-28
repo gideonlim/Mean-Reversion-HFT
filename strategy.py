@@ -102,7 +102,7 @@ def compute_stats(df: pd.DataFrame, n: int = 252) -> Stats:
     sigma = float(trades.std()) if len(trades) > 1 else 0.0
     # Guard against numerical-noise std on degenerate series (identical values).
     daily_sharpe = mu / sigma if sigma > 1e-12 else 0.0
-    annualized_sharpe = daily_sharpe * np.sqrt(n)
+    annualized_sharpe = float(daily_sharpe * np.sqrt(n))
     return Stats(
         win_rate=win_rate,
         gross_compound_return=gross_compound_return,
