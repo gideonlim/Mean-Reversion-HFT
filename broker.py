@@ -1,0 +1,134 @@
+"""Alpaca trading I/O wrapper.
+
+All trading-side calls live here so the orchestrator (live.py) can be tested with
+a mock Broker, and so future broker swaps don't reach into other modules.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+
+from alpaca.common.exceptions import APIError
+from alpaca.trading.client import TradingClient
+from alpaca.trading.enums import OrderSide, QueryOrderStatus, TimeInForce
+from alpaca.trading.requests import GetOrdersRequest, MarketOrderRequest
+
+from config import ET
+
+
+# MOC submission window is [close - 25min, close - 11min].
+# Alpaca rejects CLS orders submitted after close-10min, so we leave a 1-min safety buffer.
+MOC_WINDOW_START_MIN_BEFORE_CLOSE = 25
+MOC_WINDOW_END_MIN_BEFORE_CLOSE = 11
+
+
+@dataclass
+class TradeWindow:
+    start: datetime  # ET-aware
+    end: datetime    # ET-aware
+    close: datetime  # ET-aware
+
+
+@dataclass
+class AssetInfo:
+    symbol: str
+    tradable: bool
+    shortable: bool
+    easy_to_borrow: bool
+
+
+@dataclass
+class SubmittedOrder:
+    id: str
+    client_order_id: str
+    symbol: str
+    qty: int
+    side: OrderSide
+
+
+class Broker:
+    def __init__(self, client: TradingClient):
+        self._client = client
+
+    # ---- Market state ---------------------------------------------------
+
+    def todays_trade_window(self) -> TradeWindow | None:
+        """Compute today's MOC submission window from Alpaca's clock.
+
+        Returns None if the market is not open today. Works automatically on
+        early-close days because next_close shifts to the actual session close.
+        """
+        clock = self._client.get_clock()
+        if not clock.is_open:
+            return None
+        close_et = clock.next_close.astimezone(ET)
+        return TradeWindow(
+            start=close_et - timedelta(minutes=MOC_WINDOW_START_MIN_BEFORE_CLOSE),
+            end=close_et - timedelta(minutes=MOC_WINDOW_END_MIN_BEFORE_CLOSE),
+            close=close_et,
+        )
+
+    def get_asset(self, symbol: str) -> AssetInfo:
+        a = self._client.get_asset(symbol)
+        return AssetInfo(
+            symbol=a.symbol,
+            tradable=bool(a.tradable),
+            shortable=bool(a.shortable),
+            easy_to_borrow=bool(a.easy_to_borrow),
+        )
+
+    # ---- Account & position --------------------------------------------
+
+    def get_account_cash(self) -> float:
+        return float(self._client.get_account().cash)
+
+    def get_position_signed_qty(self, symbol: str) -> int:
+        """Positive long, negative short, 0 flat. Handles 404 (no position) cleanly."""
+        try:
+            pos = self._client.get_open_position(symbol)
+        except APIError as e:
+            if "position does not exist" in str(e).lower() or "404" in str(e):
+                return 0
+            raise
+        return int(float(pos.qty_available if hasattr(pos, "qty_available") else pos.qty))
+
+    # ---- Orders --------------------------------------------------------
+
+    def cancel_open_orders(self, symbol: str) -> int:
+        """Cancel all open orders for the given symbol. Returns count cancelled."""
+        req = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol])
+        open_orders = self._client.get_orders(filter=req)
+        n = 0
+        for o in open_orders:
+            try:
+                self._client.cancel_order_by_id(o.id)
+                n += 1
+            except APIError:
+                pass
+        return n
+
+    def submit_moc(
+        self,
+        symbol: str,
+        qty: int,
+        side: OrderSide,
+        client_order_id: str,
+    ) -> SubmittedOrder:
+        """Submit a market-on-close order. qty must be a positive whole number."""
+        if qty <= 0:
+            raise ValueError(f"submit_moc qty must be > 0, got {qty}")
+        req = MarketOrderRequest(
+            symbol=symbol,
+            qty=qty,
+            side=side,
+            time_in_force=TimeInForce.CLS,
+            client_order_id=client_order_id,
+        )
+        o = self._client.submit_order(order_data=req)
+        return SubmittedOrder(
+            id=str(o.id),
+            client_order_id=o.client_order_id,
+            symbol=o.symbol,
+            qty=int(float(o.qty)),
+            side=o.side,
+        )

@@ -1,0 +1,18 @@
+[project]
+name = "mean-reversion-strategy"
+version = "0.1.0"
+description = "Lag-1 mean-reversion daily-bar paper-trading strategy on Alpaca"
+requires-python = ">=3.11"
+dependencies = [
+    "alpaca-py>=0.43.0",
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "python-dotenv>=1.0",
+    "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
