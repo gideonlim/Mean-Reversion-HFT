@@ -156,3 +156,32 @@ def test_groupby_lag_dir_buckets():
     np.testing.assert_allclose(tbl[("log_return", "mean")].loc[1], (-0.01 - 0.02 - 0.015) / 3)
     assert tbl[("log_return", "count")].loc[-1] == 3
     assert tbl[("log_return", "count")].loc[1] == 3
+
+
+# ---- LONG_ONLY mode ---------------------------------------------------
+
+def test_long_only_clamps_short_signals_to_zero():
+    closes = [100.0, 102.0, 100.0, 101.0, 99.0, 100.0]
+    out = strategy.add_signal_columns(pd.DataFrame({"close": closes}), long_only=True)
+    # With long_only, signal can only be 0 or +1 (never -1).
+    assert (out["signal"] >= 0).all()
+    # Specifically: dir_lag_1 = +1 -> signal would be -1 -> clamped to 0.
+    short_days = out["dir_lag_1"] == 1
+    assert (out.loc[short_days, "signal"] == 0).all()
+    # Long days still have signal = +1.
+    long_days = out["dir_lag_1"] == -1
+    assert (out.loc[long_days, "signal"] == 1).all()
+
+
+def test_long_only_trade_log_return_zero_on_flat_days():
+    closes = [100.0, 102.0, 100.0, 101.0, 99.0, 100.0]
+    out = strategy.add_signal_columns(pd.DataFrame({"close": closes}), long_only=True)
+    flat_days = out["signal"] == 0
+    np.testing.assert_array_equal(out.loc[flat_days, "trade_log_return"].values, 0.0)
+
+
+def test_long_only_false_matches_original_behavior():
+    closes = [100.0, 102.0, 100.0, 101.0, 99.0, 100.0]
+    default = strategy.add_signal_columns(pd.DataFrame({"close": closes}))
+    explicit = strategy.add_signal_columns(pd.DataFrame({"close": closes}), long_only=False)
+    pd.testing.assert_frame_equal(default, explicit)

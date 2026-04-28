@@ -12,6 +12,7 @@ class Settings:
     IN_SAMPLE_SPLIT: float = 0.75
     LOOKBACK_YEARS: int = 5
     ANNUALIZATION_N: int = 252
+    LONG_ONLY: bool = False
     LOG_DIR: str = "logs"
 
 

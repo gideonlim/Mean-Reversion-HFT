@@ -47,8 +47,12 @@ def main() -> int:
         return 2
     print(f"Got {len(bars)} bars: {bars.index.min()} -> {bars.index.max()}")
 
-    df = strategy.add_signal_columns(bars, close_col="close")
-    result = strategy.validate_in_out_sample(df, split=SETTINGS.IN_SAMPLE_SPLIT)
+    # Validate the edge on the full bidirectional signal (both long and short).
+    df_full = strategy.add_signal_columns(bars, close_col="close", long_only=False)
+    result = strategy.validate_in_out_sample(df_full, split=SETTINGS.IN_SAMPLE_SPLIT)
+
+    # Stats and equity curve respect LONG_ONLY setting.
+    df = strategy.add_signal_columns(bars, close_col="close", long_only=SETTINGS.LONG_ONLY)
     stats = strategy.compute_stats(df, n=SETTINGS.ANNUALIZATION_N)
 
     pd.options.display.float_format = "{:.6f}".format
@@ -67,6 +71,8 @@ def main() -> int:
     print(f"n_trades              = {stats.n_trades}")
 
     print(f"\nEdge gate (in & out both mean-reverting): {'PASS' if result.edge_holds else 'FAIL'}")
+    if SETTINGS.LONG_ONLY:
+        print("(Stats/equity shown for LONG_ONLY mode — flat on short-signal days)")
 
     log_dir = Path(SETTINGS.LOG_DIR)
     log_dir.mkdir(exist_ok=True)

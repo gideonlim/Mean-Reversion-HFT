@@ -183,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
     target_abs_qty = max(int(cash * SETTINGS.POSITION_FRACTION / closed.prev_close), 0)
 
     # 7. Decide
-    shortable = asset.shortable and asset.easy_to_borrow
+    shortable = asset.shortable and asset.easy_to_borrow and not SETTINGS.LONG_ONLY
     decision = decide_transition(
         signal=signal,
         current_qty_signed=current_qty,
@@ -209,6 +209,9 @@ def main(argv: list[str] | None = None) -> int:
             submitted_coids.append(o.client_order_id)
             log.info("submitted: side=%s qty=%d sym=%s coid=%s id=%s", o.side.value, o.qty, o.symbol, o.client_order_id, o.id)
         except APIError as e:
+            if "client_order_id" in str(e).lower() or "duplicate" in str(e).lower():
+                log.info("order already submitted today (duplicate coid=%s); idempotent exit", coid)
+                return 0
             log.error("MOC submission failed (action=%s, qty=%d): %s", intended.action, intended.qty, e)
             return 1
 

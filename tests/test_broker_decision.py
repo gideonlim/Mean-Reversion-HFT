@@ -112,6 +112,24 @@ def test_shortable_irrelevant_when_signal_long():
     assert d.orders[0].side == OrderSide.BUY
 
 
+def test_long_only_mode_uses_shortable_skip_for_short_signal():
+    # LONG_ONLY=True means live.py passes shortable=False when signal=-1.
+    # Verify the decision logic stays flat (no short position opened).
+    d = decide_transition(signal=-1, current_qty_signed=0, target_abs_qty=10, shortable=False)
+    assert d.transition == "shortable_skip"
+    assert d.orders == []
+    assert d.target_qty == 0
+
+
+def test_long_only_mode_closes_existing_long_on_short_signal():
+    # If currently long and signal flips to -1 in LONG_ONLY mode, close the long, don't open short.
+    d = decide_transition(signal=-1, current_qty_signed=15, target_abs_qty=10, shortable=False)
+    assert d.transition == "shortable_skip"
+    assert len(d.orders) == 1
+    assert d.orders[0].side == OrderSide.SELL and d.orders[0].qty == 15
+    assert d.target_qty == 0
+
+
 # ---- last_two_closed_bars: today's partial bar filtered ---------------
 
 def _bars_df(dates, closes):

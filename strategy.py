@@ -10,9 +10,12 @@ import numpy as np
 import pandas as pd
 
 
-def add_signal_columns(df: pd.DataFrame, close_col: str = "close") -> pd.DataFrame:
+def add_signal_columns(
+    df: pd.DataFrame, close_col: str = "close", long_only: bool = False
+) -> pd.DataFrame:
     """Add log_return, lag_1, dir_lag_1, signal, trade_log_return columns.
 
+    If long_only=True, short signals (-1) are replaced with 0 (flat).
     Returns a new DataFrame; does not mutate input.
     """
     out = df.copy()
@@ -22,6 +25,8 @@ def add_signal_columns(df: pd.DataFrame, close_col: str = "close") -> pd.DataFra
         lambda x: 1 if x > 0 else -1
     )
     out["signal"] = -1 * out["dir_lag_1"]
+    if long_only:
+        out["signal"] = out["signal"].clip(lower=0)
     out["trade_log_return"] = out["signal"] * out["log_return"]
     return out
 

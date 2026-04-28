@@ -1,0 +1,30 @@
+name: Live Paper Trade
+
+on:
+  schedule:
+    # Every 15 min from 16:00-22:00 UTC (covers all US close times across all DST combos).
+    # GHA cron has ~5-10 min jitter; idempotent client_order_id prevents double-submission.
+    - cron: "*/15 16-21 * * 1-5"  # Mon-Fri only
+  workflow_dispatch: {}  # Manual trigger for testing
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e .
+
+      - name: Run live strategy
+        env:
+          APCA_API_KEY_ID: ${{ secrets.APCA_API_KEY_ID }}
+          APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
+        run: python live.py

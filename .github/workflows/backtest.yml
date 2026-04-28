@@ -1,0 +1,54 @@
+name: Backtest
+
+on:
+  schedule:
+    - cron: "0 12 * * 0"  # Weekly on Sunday at 12:00 UTC
+  workflow_dispatch: {}  # Manual trigger
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e .
+
+      - name: Run backtest
+        env:
+          APCA_API_KEY_ID: ${{ secrets.APCA_API_KEY_ID }}
+          APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
+        run: python backtest.py
+
+      - name: Upload equity curve
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: equity-curve
+          path: logs/equity_curve_*.png
+          retention-days: 30
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e ".[test]"
+
+      - name: Run tests
+        run: python -m pytest tests/ -v
