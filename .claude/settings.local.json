@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(python -c \"import alpaca; print\\(alpaca.__version__\\)\")",
-      "Bash(python -c \"import pandas, numpy, dotenv, matplotlib, pytest; print\\('ok'\\)\")"
-    ]
-  }
-}
