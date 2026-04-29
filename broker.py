@@ -19,9 +19,12 @@ from config import ET
 log = logging.getLogger(__name__)
 
 
-# MOC submission window is [close - 25min, close - 11min].
-# Alpaca rejects CLS orders submitted after close-10min, so we leave a 1-min safety buffer.
-MOC_WINDOW_START_MIN_BEFORE_CLOSE = 25
+# MOC submission window is [close - 150min, close - 11min].
+# Wide start (2.5h) because GitHub Actions throttles cron to ~hourly fires;
+# a narrow window misses every run. Submitting MOC orders early is safe —
+# they queue for the closing auction regardless of when submitted.
+# Alpaca rejects CLS orders after close-10min, so we keep 1-min safety buffer on the end.
+MOC_WINDOW_START_MIN_BEFORE_CLOSE = 150
 MOC_WINDOW_END_MIN_BEFORE_CLOSE = 11
 
 

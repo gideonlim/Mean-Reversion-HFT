@@ -177,14 +177,15 @@ def _mock_broker_with_close(close_et: datetime, is_open: bool = True) -> Broker:
     return Broker(client)
 
 
-def test_trade_window_normal_close_resolves_to_15_35_to_15_49():
+def test_trade_window_normal_close():
     close = datetime(2026, 4, 28, 16, 0, tzinfo=ET)
     broker = _mock_broker_with_close(close)
     window = broker.todays_trade_window()
     assert window is not None
     assert window.start == close - timedelta(minutes=MOC_WINDOW_START_MIN_BEFORE_CLOSE)
     assert window.end == close - timedelta(minutes=MOC_WINDOW_END_MIN_BEFORE_CLOSE)
-    assert window.start.hour == 15 and window.start.minute == 35
+    # With 150-min start: 16:00 - 2h30m = 13:30. End: 16:00 - 11min = 15:49.
+    assert window.start.hour == 13 and window.start.minute == 30
     assert window.end.hour == 15 and window.end.minute == 49
 
 
@@ -193,7 +194,8 @@ def test_trade_window_early_close_shifts_window_automatically():
     broker = _mock_broker_with_close(close)
     window = broker.todays_trade_window()
     assert window is not None
-    assert window.start.hour == 12 and window.start.minute == 35
+    # 13:00 - 2h30m = 10:30. End: 13:00 - 11min = 12:49.
+    assert window.start.hour == 10 and window.start.minute == 30
     assert window.end.hour == 12 and window.end.minute == 49
 
 
