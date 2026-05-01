@@ -29,9 +29,12 @@ jobs:
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
         run: python report.py
 
-      - name: Upload equity chart
+      - name: Upload report artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: equity-chart-${{ github.run_number }}
-          path: logs/report_equity.png
+          name: report-${{ github.run_number }}
+          path: |
+            logs/report.pdf
+            logs/trades.csv
+            logs/report_equity.png
           retention-days: 90

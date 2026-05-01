@@ -7,8 +7,10 @@ Outputs:
 """
 from __future__ import annotations
 
+import csv
 import json
 import math
+import mimetypes
 import os
 import smtplib
 import sys
@@ -26,11 +28,25 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import QueryOrderStatus
 from alpaca.trading.requests import GetOrdersRequest
 from dotenv import load_dotenv
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import cm
+from reportlab.platypus import (
+    Image,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 
 from config import SETTINGS, et_now, et_today
 
 LOG_FILE = Path(SETTINGS.LOG_DIR) / "trade_log.json"
 CHART_FILE = Path(SETTINGS.LOG_DIR) / "report_equity.png"
+PDF_FILE = Path(SETTINGS.LOG_DIR) / "report.pdf"
+CSV_FILE = Path(SETTINGS.LOG_DIR) / "trades.csv"
 
 
 def _enum_value(e) -> str:
@@ -216,6 +232,183 @@ def format_markdown(stats: dict, recent_orders: list[dict]) -> str:
 """
 
 
+def fetch_all_orders(client: TradingClient) -> list:
+    """Fetch all orders for SETTINGS.SYMBOL since beginning of period (paginated)."""
+    all_orders = []
+    seen_ids = set()
+    until = None
+    page_size = 500
+    while True:
+        kwargs = {
+            "status": QueryOrderStatus.ALL,
+            "symbols": [SETTINGS.SYMBOL],
+            "limit": page_size,
+            "direction": "desc",
+        }
+        if until is not None:
+            kwargs["until"] = until
+        page = client.get_orders(filter=GetOrdersRequest(**kwargs))
+        if not page:
+            break
+        new = [o for o in page if o.id not in seen_ids]
+        if not new:
+            break
+        all_orders.extend(new)
+        seen_ids.update(o.id for o in new)
+        if len(page) < page_size:
+            break
+        until = min(o.created_at for o in page)
+    return sorted(all_orders, key=lambda x: x.created_at)
+
+
+def write_trades_csv(orders: list, path: Path) -> Path:
+    """Write all orders to a CSV file."""
+    path.parent.mkdir(exist_ok=True)
+    fields = [
+        "created_at", "submitted_at", "filled_at", "symbol", "side", "qty",
+        "filled_qty", "time_in_force", "type", "status", "limit_price",
+        "filled_avg_price", "client_order_id", "id",
+    ]
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        for o in orders:
+            w.writerow({
+                "created_at": str(o.created_at)[:19] if o.created_at else "",
+                "submitted_at": str(o.submitted_at)[:19] if o.submitted_at else "",
+                "filled_at": str(o.filled_at)[:19] if o.filled_at else "",
+                "symbol": o.symbol,
+                "side": _enum_value(o.side),
+                "qty": o.qty,
+                "filled_qty": o.filled_qty if o.filled_qty else "",
+                "time_in_force": _enum_value(o.time_in_force),
+                "type": _enum_value(o.order_type) if hasattr(o, "order_type") else "",
+                "status": _enum_value(o.status),
+                "limit_price": o.limit_price if o.limit_price else "",
+                "filled_avg_price": o.filled_avg_price if o.filled_avg_price else "",
+                "client_order_id": o.client_order_id,
+                "id": str(o.id),
+            })
+    return path
+
+
+def generate_pdf(
+    stats: dict,
+    recent_orders: list[dict],
+    chart_path: Path,
+    out_path: Path,
+) -> Path:
+    """Render a PDF report using reportlab."""
+    out_path.parent.mkdir(exist_ok=True)
+    doc = SimpleDocTemplate(
+        str(out_path), pagesize=A4,
+        leftMargin=2 * cm, rightMargin=2 * cm,
+        topMargin=2 * cm, bottomMargin=2 * cm,
+        title=f"{SETTINGS.SYMBOL} Mean-Reversion Report",
+    )
+    styles = getSampleStyleSheet()
+    h1 = styles["Heading1"]
+    h2 = ParagraphStyle("h2", parent=styles["Heading2"], spaceBefore=12, spaceAfter=6)
+    body = styles["BodyText"]
+    muted = ParagraphStyle("muted", parent=body, textColor=colors.HexColor("#6b7280"), fontSize=9)
+
+    story = []
+    story.append(Paragraph(f"{SETTINGS.SYMBOL} Mean-Reversion Report", h1))
+    story.append(Paragraph(
+        f"{et_today().isoformat()} &middot; {SETTINGS.SYMBOL} &middot; "
+        f"Long-only: {SETTINGS.LONG_ONLY}",
+        muted,
+    ))
+    story.append(Spacer(1, 0.4 * cm))
+
+    if not stats:
+        story.append(Paragraph("No data available yet.", body))
+        doc.build(story)
+        return out_path
+
+    pnl_sign = "+" if stats["total_pnl"] >= 0 else ""
+    pnl_color = colors.HexColor("#16a34a") if stats["total_pnl"] >= 0 else colors.HexColor("#dc2626")
+
+    # Account section
+    story.append(Paragraph("Account", h2))
+    account_rows = [
+        ["Equity", f"${stats['current_equity']:,.2f}"],
+        ["Starting Capital", f"${stats['starting_capital']:,.2f}"],
+        ["Total P&L", f"{pnl_sign}${stats['total_pnl']:,.2f}  ({pnl_sign}{stats['total_return_pct']:.2f}%)"],
+        ["Annualized Return", _fmt_pct(stats["annualized_return_pct"])],
+        ["Position", stats["position"]],
+    ]
+    story.append(_kv_table(account_rows, pnl_color_idx=2 if stats["total_pnl"] != 0 else None, pnl_color=pnl_color))
+
+    # Risk section
+    story.append(Paragraph("Risk", h2))
+    risk_rows = [
+        ["Daily Sharpe", _fmt_sharpe(stats["daily_sharpe"])],
+        ["Annualized Sharpe", _fmt_sharpe(stats["annualized_sharpe"])],
+        ["Max Drawdown", f"{stats['max_drawdown_pct']:.2f}%"],
+        ["Trading Days", f"{stats['trading_days']}  ({stats['calendar_days']} calendar days)"],
+    ]
+    story.append(_kv_table(risk_rows))
+
+    # Equity chart
+    if chart_path.exists():
+        story.append(Paragraph("Equity Curve", h2))
+        story.append(Image(str(chart_path), width=16 * cm, height=7 * cm))
+
+    # Recent orders
+    story.append(Paragraph("Recent Orders", h2))
+    order_rows = [["Date", "Side", "Qty (filled / total)", "Status", "Fill Price"]]
+    for o in recent_orders[-10:]:
+        fill = f"${o['filled_avg_price']:.2f}" if o.get("filled_avg_price") else "—"
+        order_rows.append([
+            o["created_at"][:10],
+            o["side"].upper(),
+            f"{o['filled_qty']} / {o['qty']}",
+            o["status"],
+            fill,
+        ])
+    if len(order_rows) == 1:
+        order_rows.append(["—", "—", "—", "—", "—"])
+
+    order_tbl = Table(order_rows, colWidths=[2.5 * cm, 2 * cm, 4 * cm, 3 * cm, 3 * cm])
+    order_tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f9fafb")),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("LINEBELOW", (0, 0), (-1, 0), 1, colors.HexColor("#e5e7eb")),
+        ("LINEBELOW", (0, 1), (-1, -1), 0.25, colors.HexColor("#e5e7eb")),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(order_tbl)
+
+    doc.build(story)
+    return out_path
+
+
+def _kv_table(rows: list[list[str]], pnl_color_idx: int | None = None, pnl_color=None) -> Table:
+    """Helper: render a 2-column key/value table for the PDF."""
+    tbl = Table(rows, colWidths=[5 * cm, 11 * cm])
+    style = [
+        ("LINEBELOW", (0, 0), (-1, -1), 0.25, colors.HexColor("#e5e7eb")),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("TEXTCOLOR", (0, 0), (0, -1), colors.HexColor("#6b7280")),
+        ("FONTNAME", (1, 0), (1, -1), "Helvetica-Bold"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]
+    if pnl_color_idx is not None and pnl_color is not None:
+        style.append(("TEXTCOLOR", (1, pnl_color_idx), (1, pnl_color_idx), pnl_color))
+    tbl.setStyle(TableStyle(style))
+    return tbl
+
+
 def main() -> int:
     load_dotenv()
     api_key = os.environ.get("APCA_API_KEY_ID")
@@ -277,6 +470,19 @@ def main() -> int:
     chart_path = plot_equity(equity_series, current_equity)
     print(f"Equity chart saved to {chart_path}")
 
+    # PDF report
+    pdf_path = generate_pdf(stats, recent_orders, chart_path, PDF_FILE)
+    print(f"PDF report saved to {pdf_path}")
+
+    # CSV of all trades since beginning of period
+    try:
+        all_orders = fetch_all_orders(client)
+        csv_path = write_trades_csv(all_orders, CSV_FILE)
+        print(f"Trades CSV saved to {csv_path} ({len(all_orders)} orders)")
+    except Exception as e:
+        print(f"Failed to fetch full order history: {e}", file=sys.stderr)
+        csv_path = None
+
     # GHA step summary
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_path:
@@ -286,8 +492,8 @@ def main() -> int:
         except OSError:
             pass
 
-    # Email report
-    send_email_report(stats, recent_orders, chart_path)
+    # Email report with PDF + CSV attached
+    send_email_report(stats, recent_orders, chart_path, pdf_path, csv_path)
 
     return 0
 
@@ -296,6 +502,8 @@ def send_email_report(
     stats: dict,
     recent_orders: list[dict],
     chart_path: Path,
+    pdf_path: Path | None = None,
+    csv_path: Path | None = None,
 ) -> None:
     """Send the report as an HTML email with the equity chart attached via Gmail SMTP."""
     email_addr = os.environ.get("EMAIL_ADDRESS")
@@ -369,6 +577,17 @@ def send_email_report(
         with open(chart_path, "rb") as img:
             msg.get_payload()[1].add_related(
                 img.read(), maintype="image", subtype="png", cid="equity_chart"
+            )
+
+    # Attach PDF and CSV
+    for path in (pdf_path, csv_path):
+        if path is None or not path.exists():
+            continue
+        ctype, _ = mimetypes.guess_type(str(path))
+        maintype, subtype = (ctype or "application/octet-stream").split("/", 1)
+        with open(path, "rb") as fh:
+            msg.add_attachment(
+                fh.read(), maintype=maintype, subtype=subtype, filename=path.name
             )
 
     try:
