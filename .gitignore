@@ -8,6 +8,9 @@ logs/
 !logs/trade_log.json
 *.png
 *.csv
+!report/*.png
+!report/*.csv
+!report/*.pdf
 .DS_Store
 .claude/
 mean_reversion_strategy.egg-info/

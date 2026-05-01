@@ -44,9 +44,19 @@ from reportlab.platypus import (
 from config import SETTINGS, et_now, et_today
 
 LOG_FILE = Path(SETTINGS.LOG_DIR) / "trade_log.json"
-CHART_FILE = Path(SETTINGS.LOG_DIR) / "report_equity.png"
-PDF_FILE = Path(SETTINGS.LOG_DIR) / "report.pdf"
-CSV_FILE = Path(SETTINGS.LOG_DIR) / "trades.csv"
+REPORT_DIR = Path(SETTINGS.REPORT_DIR)
+
+
+def _report_paths(et_date_iso: str) -> tuple[Path, Path, Path]:
+    """Return (chart_path, pdf_path, csv_path) for a given ET date.
+
+    Files are date-stamped so daily reports accumulate as a history.
+    """
+    return (
+        REPORT_DIR / f"equity_{et_date_iso}.png",
+        REPORT_DIR / f"report_{et_date_iso}.pdf",
+        REPORT_DIR / f"trades_{et_date_iso}.csv",
+    )
 
 
 def _enum_value(e) -> str:
@@ -153,8 +163,12 @@ def compute_report_stats(
     }
 
 
-def plot_equity(equity_series: list[tuple[date, float]], current_equity: float) -> Path:
-    """Plot equity curve and save to PNG."""
+def plot_equity(
+    equity_series: list[tuple[date, float]],
+    current_equity: float,
+    out_path: Path,
+) -> Path:
+    """Plot equity curve and save to PNG at out_path."""
     dates = [d for d, _ in equity_series]
     equities = [eq for _, eq in equity_series]
 
@@ -178,10 +192,10 @@ def plot_equity(equity_series: list[tuple[date, float]], current_equity: float) 
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
 
-    CHART_FILE.parent.mkdir(exist_ok=True)
-    fig.savefig(CHART_FILE, dpi=140)
+    out_path.parent.mkdir(exist_ok=True)
+    fig.savefig(out_path, dpi=140)
     plt.close(fig)
-    return CHART_FILE
+    return out_path
 
 
 def _fmt_pct(value: float | None) -> str:
@@ -467,17 +481,21 @@ def main() -> int:
     md = format_markdown(stats, recent_orders)
     print(md)
 
-    chart_path = plot_equity(equity_series, current_equity)
+    # Date-stamped output paths in the report directory
+    et_date_iso = et_today().isoformat()
+    chart_path, pdf_path, csv_path = _report_paths(et_date_iso)
+
+    chart_path = plot_equity(equity_series, current_equity, chart_path)
     print(f"Equity chart saved to {chart_path}")
 
     # PDF report
-    pdf_path = generate_pdf(stats, recent_orders, chart_path, PDF_FILE)
+    pdf_path = generate_pdf(stats, recent_orders, chart_path, pdf_path)
     print(f"PDF report saved to {pdf_path}")
 
     # CSV of all trades since beginning of period
     try:
         all_orders = fetch_all_orders(client)
-        csv_path = write_trades_csv(all_orders, CSV_FILE)
+        csv_path = write_trades_csv(all_orders, csv_path)
         print(f"Trades CSV saved to {csv_path} ({len(all_orders)} orders)")
     except Exception as e:
         print(f"Failed to fetch full order history: {e}", file=sys.stderr)

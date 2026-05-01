@@ -1,0 +1,3 @@
+created_at,submitted_at,filled_at,symbol,side,qty,filled_qty,time_in_force,type,status,limit_price,filled_avg_price,client_order_id,id
+2026-04-29 18:55:07,2026-04-29 18:55:07,2026-04-29 19:59:58,SPY,buy,66,25,cls,market,expired,,711.4792,meanrev-2026-04-29-SPY-open,1f8e4b8d-7496-476c-874d-da70359cdc10
+2026-04-30 18:52:07,2026-04-30 18:52:07,2026-04-30 19:59:58,SPY,buy,18,18,cls,market,filled,,718.99,meanrev-2026-04-30-SPY-scale,13f377fb-c5ba-4146-b7d7-26c07add29f2
