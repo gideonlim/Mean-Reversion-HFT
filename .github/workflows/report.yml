@@ -2,7 +2,7 @@ name: Daily Report
 
 on:
   schedule:
-    - cron: "0 22 * * *"  # 22:00 UTC = 8am AEST / 9am AEDT daily
+    - cron: "0 20 * * *"  # 20:00 UTC = 6am AEST / 7am AEDT daily
   workflow_dispatch: {}   # Manual trigger
 
 jobs:
@@ -21,10 +21,12 @@ jobs:
       - name: Install dependencies
         run: pip install -e .
 
-      - name: Generate report
+      - name: Generate and email report
         env:
           APCA_API_KEY_ID: ${{ secrets.APCA_API_KEY_ID }}
           APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
+          EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
         run: python report.py
 
       - name: Upload equity chart

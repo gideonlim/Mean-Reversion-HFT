@@ -3,14 +3,17 @@
 Outputs:
 - Markdown report (to stdout + GHA step summary)
 - Equity curve PNG (logs/report_equity.png)
+- Email with HTML report + chart attachment (if EMAIL_ADDRESS and EMAIL_APP_PASSWORD are set)
 """
 from __future__ import annotations
 
 import json
 import math
 import os
+import smtplib
 import sys
 from datetime import date, datetime, timedelta
+from email.message import EmailMessage
 from pathlib import Path
 
 import matplotlib
@@ -258,7 +261,99 @@ def main() -> int:
         except OSError:
             pass
 
+    # Email report
+    send_email_report(stats, recent_orders, chart_path)
+
     return 0
+
+
+def send_email_report(
+    stats: dict,
+    recent_orders: list[dict],
+    chart_path: Path,
+) -> None:
+    """Send the report as an HTML email with the equity chart attached via Gmail SMTP."""
+    email_addr = os.environ.get("EMAIL_ADDRESS")
+    email_pass = os.environ.get("EMAIL_APP_PASSWORD")
+    if not email_addr or not email_pass:
+        print("EMAIL_ADDRESS / EMAIL_APP_PASSWORD not set — skipping email")
+        return
+
+    pnl_sign = "+" if stats.get("total_pnl", 0) >= 0 else ""
+    pnl_color = "#16a34a" if stats.get("total_pnl", 0) >= 0 else "#dc2626"
+
+    orders_html = ""
+    for o in recent_orders[-5:]:
+        fill = f"${o['filled_avg_price']:.2f}" if o.get("filled_avg_price") else "—"
+        orders_html += f"<tr><td>{o['created_at'][:10]}</td><td>{o['side'].upper()} {o['filled_qty']}/{o['qty']}</td><td>{o['status']}</td><td>{fill}</td></tr>\n"
+    if not orders_html:
+        orders_html = "<tr><td colspan='4'>No recent orders</td></tr>"
+
+    html = f"""\
+<html><body style="font-family: -apple-system, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+<h2 style="margin-bottom: 4px;">Mean-Reversion Daily Report</h2>
+<p style="color: #6b7280; margin-top: 0;">{et_today().isoformat()} &middot; {SETTINGS.SYMBOL}</p>
+
+<table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
+<tr><td style="padding: 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Equity</td>
+    <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; font-weight: bold; text-align: right;">${stats.get('current_equity', 0):,.2f}</td></tr>
+<tr><td style="padding: 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Total P&L</td>
+    <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; font-weight: bold; text-align: right; color: {pnl_color};">{pnl_sign}${stats.get('total_pnl', 0):,.2f} ({pnl_sign}{stats.get('total_return_pct', 0):.2f}%)</td></tr>
+<tr><td style="padding: 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Position</td>
+    <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">{stats.get('position', 'flat')}</td></tr>
+<tr><td style="padding: 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Ann. Sharpe</td>
+    <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">{stats.get('annualized_sharpe', 0):.4f}</td></tr>
+<tr><td style="padding: 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Max Drawdown</td>
+    <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">{stats.get('max_drawdown_pct', 0):.2f}%</td></tr>
+<tr><td style="padding: 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Trading Days</td>
+    <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">{stats.get('trading_days', 0)}</td></tr>
+</table>
+
+<h3>Equity Curve</h3>
+<img src="cid:equity_chart" style="width: 100%; max-width: 580px;" alt="Equity curve" />
+
+<h3 style="margin-top: 24px;">Recent Orders</h3>
+<table style="border-collapse: collapse; width: 100%; font-size: 14px;">
+<tr style="background: #f9fafb;">
+  <th style="padding: 6px 8px; text-align: left; border-bottom: 2px solid #e5e7eb;">Date</th>
+  <th style="padding: 6px 8px; text-align: left; border-bottom: 2px solid #e5e7eb;">Side</th>
+  <th style="padding: 6px 8px; text-align: left; border-bottom: 2px solid #e5e7eb;">Status</th>
+  <th style="padding: 6px 8px; text-align: left; border-bottom: 2px solid #e5e7eb;">Fill</th>
+</tr>
+{orders_html}
+</table>
+
+<p style="color: #9ca3af; font-size: 12px; margin-top: 24px;">
+  Starting capital: ${stats.get('starting_capital', 0):,.2f} &middot;
+  Ann. return: {stats.get('annualized_return_pct', 0):+.2f}% &middot;
+  Daily Sharpe: {stats.get('daily_sharpe', 0):.4f}
+</p>
+</body></html>"""
+
+    msg = EmailMessage()
+    msg["Subject"] = (
+        f"{SETTINGS.SYMBOL} Report {et_today().isoformat()} — "
+        f"{pnl_sign}${stats.get('total_pnl', 0):,.2f} ({pnl_sign}{stats.get('total_return_pct', 0):.2f}%)"
+    )
+    msg["From"] = email_addr
+    msg["To"] = email_addr
+    msg.set_content("Your email client does not support HTML. View in a browser.")
+    msg.add_alternative(html, subtype="html")
+
+    if chart_path.exists():
+        with open(chart_path, "rb") as img:
+            msg.get_payload()[1].add_related(
+                img.read(), maintype="image", subtype="png", cid="equity_chart"
+            )
+
+    try:
+        with smtplib.SMTP("smtp.gmail.com", 587) as s:
+            s.starttls()
+            s.login(email_addr, email_pass)
+            s.send_message(msg)
+        print(f"Email sent to {email_addr}")
+    except Exception as e:
+        print(f"Email failed: {e}", file=sys.stderr)
 
 
 if __name__ == "__main__":
