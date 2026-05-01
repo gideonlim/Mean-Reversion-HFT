@@ -1,6 +1,7 @@
-"""Snapshot account state, positions, and recent orders to a JSON log file.
+"""Snapshot account state, positions, and open orders to a JSON log file.
 
 Called before and after live.py in the GHA workflow to track position changes.
+Also runs as standalone market-open / market-close workflows.
 Appends one entry per invocation; the log file is committed back to the repo.
 """
 from __future__ import annotations
@@ -9,7 +10,6 @@ import argparse
 import json
 import os
 import sys
-from datetime import timedelta
 from pathlib import Path
 
 from alpaca.trading.client import TradingClient
@@ -50,12 +50,11 @@ def snapshot(client: TradingClient, label: str) -> dict:
             "unrealized_plpc": float(p.unrealized_plpc) if p.unrealized_plpc else 0.0,
         })
 
-    # Recent orders across all configured symbols (last 2 days)
-    since = (now - timedelta(days=2)).isoformat()
+    # Only open/pending orders — filled/cancelled are historical, not state.
+    # Report.py fetches its own full order history directly from Alpaca.
     try:
         orders = client.get_orders(filter=GetOrdersRequest(
-            status=QueryOrderStatus.ALL,
-            after=since,
+            status=QueryOrderStatus.OPEN,
             symbols=list(SETTINGS.SYMBOLS),
             limit=50,
         ))
@@ -66,12 +65,12 @@ def snapshot(client: TradingClient, label: str) -> dict:
     for o in sorted(orders, key=lambda x: x.created_at):
         order_list.append({
             "created_at": str(o.created_at)[:19],
+            "symbol": o.symbol,
             "side": _enum_value(o.side),
             "qty": int(float(o.qty)),
             "filled_qty": int(float(o.filled_qty)) if o.filled_qty else 0,
             "time_in_force": _enum_value(o.time_in_force),
             "status": _enum_value(o.status),
-            "filled_avg_price": float(o.filled_avg_price) if o.filled_avg_price else None,
             "client_order_id": o.client_order_id,
         })
 
@@ -86,8 +85,49 @@ def snapshot(client: TradingClient, label: str) -> dict:
             "portfolio_value": float(acct.portfolio_value) if acct.portfolio_value else float(acct.equity),
         },
         "positions": pos_list,
-        "recent_orders": order_list,
+        "open_orders": order_list,
     }
+
+
+def _print_summary(snap: dict) -> None:
+    """Print a formatted monitor summary to console."""
+    label = snap["label"]
+    acct = snap["account"]
+    positions = snap["positions"]
+    orders = snap["open_orders"]
+
+    sep = "=" * 60
+    dash = "-" * 60
+
+    print(sep)
+    print(f"  MONITOR SNAPSHOT ({label})")
+    print(sep)
+    print(f"  Account equity: ${acct['equity']:,.2f}  "
+          f"Cash: ${acct['cash']:,.2f}  "
+          f"Positions: {len(positions)}")
+
+    if positions:
+        print(dash)
+        for p in positions:
+            side_label = p["side"].upper()
+            pnl = p["unrealized_pl"]
+            pnl_pct = p["unrealized_plpc"] * 100
+            sign = "+" if pnl >= 0 else ""
+            print(f"  {p['symbol']}: {side_label} {p['qty']} shares "
+                  f"@ ${p['avg_entry_price']:.2f}  "
+                  f"P&L: {sign}${pnl:,.2f} ({sign}{pnl_pct:.2f}%)")
+
+    print(dash)
+    if orders:
+        print(f"  Open orders: {len(orders)}")
+        for o in orders:
+            print(f"    {o['symbol']} {o['side'].upper()} {o['qty']} "
+                  f"- {o['status']} ({o['time_in_force']})  "
+                  f"coid: {o['client_order_id']}")
+    else:
+        print("  Open orders: none")
+
+    print(sep)
 
 
 def load_log() -> list[dict]:
@@ -127,9 +167,7 @@ def main(argv: list[str] | None = None) -> int:
     entries.append(snap)
     save_log(entries)
 
-    print(f"[{snap['label']}] equity=${snap['account']['equity']:,.2f}  "
-          f"positions={len(snap['positions'])}  "
-          f"orders={len(snap['recent_orders'])}")
+    _print_summary(snap)
     return 0
 
 
