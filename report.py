@@ -12,7 +12,7 @@ import math
 import os
 import smtplib
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -31,7 +31,13 @@ from config import SETTINGS, et_now, et_today
 
 LOG_FILE = Path(SETTINGS.LOG_DIR) / "trade_log.json"
 CHART_FILE = Path(SETTINGS.LOG_DIR) / "report_equity.png"
-STARTING_CAPITAL = 50_000.0
+
+
+def _enum_value(e) -> str:
+    """Robustly extract a string from an Alpaca enum."""
+    if hasattr(e, "value"):
+        return str(e.value).lower()
+    return str(e).split(".")[-1].lower()
 
 
 def load_log() -> list[dict]:
@@ -65,16 +71,24 @@ def compute_report_stats(
     positions: list[dict],
 ) -> dict:
     """Compute key stats for the report."""
+    starting_capital = SETTINGS.STARTING_CAPITAL
     if not equity_series:
         return {}
 
     equities = [eq for _, eq in equity_series]
     dates = [d for d, _ in equity_series]
 
-    total_return = (current_equity / STARTING_CAPITAL - 1) * 100
+    total_return = (current_equity / starting_capital - 1) * 100
     n_days = (dates[-1] - dates[0]).days if len(dates) > 1 else 1
-    ann_factor = 365.25 / max(n_days, 1)
-    annualized_return = ((current_equity / STARTING_CAPITAL) ** ann_factor - 1) * 100
+
+    # Annualized stats only meaningful with enough history; otherwise show N/A.
+    has_enough_history = n_days >= SETTINGS.MIN_DAYS_FOR_ANNUALIZATION
+
+    if has_enough_history:
+        ann_factor = 365.25 / n_days
+        annualized_return = ((current_equity / starting_capital) ** ann_factor - 1) * 100
+    else:
+        annualized_return = None
 
     # Daily log returns for Sharpe
     daily_returns = []
@@ -82,17 +96,18 @@ def compute_report_stats(
         if equities[i - 1] > 0:
             daily_returns.append(math.log(equities[i] / equities[i - 1]))
 
-    if len(daily_returns) > 1:
+    if len(daily_returns) > 1 and has_enough_history:
         mu = np.mean(daily_returns)
         sigma = np.std(daily_returns, ddof=1)
         daily_sharpe = mu / sigma if sigma > 1e-12 else 0.0
         ann_sharpe = daily_sharpe * math.sqrt(252)
     else:
-        daily_sharpe = 0.0
-        ann_sharpe = 0.0
+        daily_sharpe = None
+        ann_sharpe = None
 
-    # Drawdown
-    peak = equities[0]
+    # Drawdown — peak starts at MAX(starting_capital, first reading) so any
+    # early loss is correctly measured against the true high-water mark.
+    peak = max(starting_capital, equities[0])
     max_dd = 0.0
     for eq in equities:
         peak = max(peak, eq)
@@ -108,7 +123,7 @@ def compute_report_stats(
     return {
         "current_equity": current_equity,
         "total_return_pct": total_return,
-        "total_pnl": current_equity - STARTING_CAPITAL,
+        "total_pnl": current_equity - starting_capital,
         "annualized_return_pct": annualized_return,
         "daily_sharpe": daily_sharpe,
         "annualized_sharpe": ann_sharpe,
@@ -116,7 +131,9 @@ def compute_report_stats(
         "trading_days": len(equities),
         "calendar_days": n_days,
         "position": pos_str,
-        "starting_capital": STARTING_CAPITAL,
+        "starting_capital": starting_capital,
+        "has_enough_history": has_enough_history,
+        "min_days_for_annualization": SETTINGS.MIN_DAYS_FOR_ANNUALIZATION,
     }
 
 
@@ -133,8 +150,8 @@ def plot_equity(equity_series: list[tuple[date, float]], current_equity: float) 
 
     fig, ax = plt.subplots(figsize=(10, 4.5))
     ax.plot(dates, equities, linewidth=1.8, color="#2563eb")
-    ax.axhline(STARTING_CAPITAL, color="grey", linewidth=0.7, linestyle="--", alpha=0.6)
-    ax.fill_between(dates, STARTING_CAPITAL, equities, alpha=0.08, color="#2563eb")
+    ax.axhline(SETTINGS.STARTING_CAPITAL, color="grey", linewidth=0.7, linestyle="--", alpha=0.6)
+    ax.fill_between(dates, SETTINGS.STARTING_CAPITAL, equities, alpha=0.08, color="#2563eb")
 
     ax.set_title(f"{SETTINGS.SYMBOL} Mean-Reversion — Account Equity", fontsize=13, fontweight="bold")
     ax.set_ylabel("Equity ($)")
@@ -149,6 +166,14 @@ def plot_equity(equity_series: list[tuple[date, float]], current_equity: float) 
     fig.savefig(CHART_FILE, dpi=140)
     plt.close(fig)
     return CHART_FILE
+
+
+def _fmt_pct(value: float | None) -> str:
+    return f"{value:+.2f}%" if value is not None else f"N/A (need >={SETTINGS.MIN_DAYS_FOR_ANNUALIZATION} days)"
+
+
+def _fmt_sharpe(value: float | None) -> str:
+    return f"{value:.4f}" if value is not None else f"N/A (need >={SETTINGS.MIN_DAYS_FOR_ANNUALIZATION} days)"
 
 
 def format_markdown(stats: dict, recent_orders: list[dict]) -> str:
@@ -173,16 +198,16 @@ def format_markdown(stats: dict, recent_orders: list[dict]) -> str:
 | **Equity** | ${stats['current_equity']:,.2f} |
 | **Starting Capital** | ${stats['starting_capital']:,.2f} |
 | **Total P&L** | {pnl_sign}${stats['total_pnl']:,.2f} ({pnl_sign}{stats['total_return_pct']:.2f}%) |
-| **Annualized Return** | {stats['annualized_return_pct']:+.2f}% |
+| **Annualized Return** | {_fmt_pct(stats['annualized_return_pct'])} |
 | **Position** | {stats['position']} |
 
 ### Risk
 | | |
 |---|---|
-| **Daily Sharpe** | {stats['daily_sharpe']:.4f} |
-| **Annualized Sharpe** | {stats['annualized_sharpe']:.4f} |
+| **Daily Sharpe** | {_fmt_sharpe(stats['daily_sharpe'])} |
+| **Annualized Sharpe** | {_fmt_sharpe(stats['annualized_sharpe'])} |
 | **Max Drawdown** | {stats['max_drawdown_pct']:.2f}% |
-| **Trading Days** | {stats['trading_days']} |
+| **Trading Days** | {stats['trading_days']} ({stats['calendar_days']} calendar days) |
 
 ### Recent Orders
 | Date | Side | Status | Fill Price |
@@ -208,7 +233,7 @@ def main() -> int:
     for p in client.get_all_positions():
         positions.append({
             "symbol": p.symbol,
-            "side": str(p.side).split(".")[-1].lower(),
+            "side": _enum_value(p.side),
             "qty": int(float(p.qty)),
             "avg_entry_price": float(p.avg_entry_price),
             "market_value": float(p.market_value),
@@ -228,10 +253,10 @@ def main() -> int:
             [
                 {
                     "created_at": str(o.created_at)[:19],
-                    "side": str(o.side).split(".")[-1].lower(),
+                    "side": _enum_value(o.side),
                     "qty": int(float(o.qty)),
                     "filled_qty": int(float(o.filled_qty)) if o.filled_qty else 0,
-                    "status": str(o.status).split(".")[-1].lower(),
+                    "status": _enum_value(o.status),
                     "filled_avg_price": float(o.filled_avg_price) if o.filled_avg_price else None,
                 }
             for o in orders],
@@ -302,7 +327,7 @@ def send_email_report(
 <tr><td style="padding: 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Position</td>
     <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">{stats.get('position', 'flat')}</td></tr>
 <tr><td style="padding: 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Ann. Sharpe</td>
-    <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">{stats.get('annualized_sharpe', 0):.4f}</td></tr>
+    <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">{_fmt_sharpe(stats.get('annualized_sharpe'))}</td></tr>
 <tr><td style="padding: 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Max Drawdown</td>
     <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">{stats.get('max_drawdown_pct', 0):.2f}%</td></tr>
 <tr><td style="padding: 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Trading Days</td>
@@ -325,8 +350,8 @@ def send_email_report(
 
 <p style="color: #9ca3af; font-size: 12px; margin-top: 24px;">
   Starting capital: ${stats.get('starting_capital', 0):,.2f} &middot;
-  Ann. return: {stats.get('annualized_return_pct', 0):+.2f}% &middot;
-  Daily Sharpe: {stats.get('daily_sharpe', 0):.4f}
+  Ann. return: {_fmt_pct(stats.get('annualized_return_pct'))} &middot;
+  Daily Sharpe: {_fmt_sharpe(stats.get('daily_sharpe'))}
 </p>
 </body></html>"""
 

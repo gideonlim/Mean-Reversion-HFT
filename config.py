@@ -13,6 +13,8 @@ class Settings:
     LOOKBACK_YEARS: int = 5
     ANNUALIZATION_N: int = 252
     LONG_ONLY: bool = False
+    STARTING_CAPITAL: float = 50_000.0  # Used by report.py for return/P&L baseline
+    MIN_DAYS_FOR_ANNUALIZATION: int = 30  # Below this, report shows N/A for annualized stats
     LOG_DIR: str = "logs"
 
 

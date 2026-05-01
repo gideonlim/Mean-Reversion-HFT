@@ -9,7 +9,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 from alpaca.trading.client import TradingClient
@@ -22,6 +22,16 @@ from config import SETTINGS, et_now, et_today
 LOG_FILE = Path(SETTINGS.LOG_DIR) / "trade_log.json"
 
 
+def _enum_value(e) -> str:
+    """Robustly extract a string from an Alpaca enum (e.g. OrderSide.BUY -> 'buy').
+
+    Prefers .value (which alpaca-py exposes), falls back to repr parsing.
+    """
+    if hasattr(e, "value"):
+        return str(e.value).lower()
+    return str(e).split(".")[-1].lower()
+
+
 def snapshot(client: TradingClient, label: str) -> dict:
     """Build a snapshot dict of current account state."""
     now = et_now()
@@ -32,7 +42,7 @@ def snapshot(client: TradingClient, label: str) -> dict:
     for p in positions:
         pos_list.append({
             "symbol": p.symbol,
-            "side": str(p.side).split(".")[-1].lower(),
+            "side": _enum_value(p.side),
             "qty": int(float(p.qty)),
             "avg_entry_price": float(p.avg_entry_price),
             "market_value": float(p.market_value),
@@ -56,11 +66,11 @@ def snapshot(client: TradingClient, label: str) -> dict:
     for o in sorted(orders, key=lambda x: x.created_at):
         order_list.append({
             "created_at": str(o.created_at)[:19],
-            "side": str(o.side).split(".")[-1].lower(),
+            "side": _enum_value(o.side),
             "qty": int(float(o.qty)),
             "filled_qty": int(float(o.filled_qty)) if o.filled_qty else 0,
-            "time_in_force": str(o.time_in_force).split(".")[-1].lower(),
-            "status": str(o.status).split(".")[-1].lower(),
+            "time_in_force": _enum_value(o.time_in_force),
+            "status": _enum_value(o.status),
             "filled_avg_price": float(o.filled_avg_price) if o.filled_avg_price else None,
             "client_order_id": o.client_order_id,
         })

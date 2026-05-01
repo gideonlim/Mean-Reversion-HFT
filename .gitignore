@@ -10,3 +10,4 @@ logs/
 *.csv
 .DS_Store
 .claude/
+mean_reversion_strategy.egg-info/
