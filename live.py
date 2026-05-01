@@ -136,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
     # 1. Idempotency
     if not args.dry_run and marker_path.exists():
         log.info("already ran today (ET=%s); exiting", et_date)
+        _write_gha_skip(f"Already ran today (ET={et_date})")
         return 0
 
     trading_client = TradingClient(api_key, api_secret, paper=True)
@@ -146,15 +147,18 @@ def main(argv: list[str] | None = None) -> int:
     window = broker.todays_trade_window()
     if window is None:
         log.info("market closed today (ET=%s); exiting", et_date)
+        _write_gha_skip(f"Market closed (ET={et_date})")
         return 0
 
     now = et_now()
     if not args.dry_run:
         if now < window.start:
             log.info("too early; window starts %s, now %s; will retry on next scheduled run", window.start, now)
+            _write_gha_skip(f"Too early — window opens {window.start.strftime('%H:%M ET')}, now {now.strftime('%H:%M ET')}")
             return 0
         if now > window.end:
             log.warning("missed today's window; window ended %s, now %s", window.end, now)
+            _write_gha_skip(f"Missed window — ended {window.end.strftime('%H:%M ET')}, now {now.strftime('%H:%M ET')}")
             return 0
 
     # 3. Asset tradability
@@ -245,7 +249,50 @@ def main(argv: list[str] | None = None) -> int:
     if not args.dry_run:
         marker_path.write_text(json.dumps(record, indent=2))
 
+    _write_gha_summary(record, args.dry_run)
     return 0
+
+
+def _write_gha_skip(reason: str) -> None:
+    """Write a short skip reason to GHA step summary."""
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_path:
+        return
+    try:
+        with open(summary_path, "a") as f:
+            f.write(f"**Skipped:** {reason}\n")
+    except OSError:
+        pass
+
+
+def _write_gha_summary(record: dict, dry_run: bool) -> None:
+    """Write a markdown summary to GitHub Actions step summary (if running in GHA)."""
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_path:
+        return
+    signal_label = "LONG (buy)" if record["signal"] == 1 else "SHORT (sell)"
+    mode = "DRY RUN" if dry_run else record["transition_type"].upper()
+    orders_str = ", ".join(
+        f"{o['side']} {o['qty']} ({o['action']})" for o in record["intended_orders"]
+    ) or "none"
+    md = f"""## {record['symbol']} — {record['et_run_date']}
+
+| | |
+|---|---|
+| **Signal** | {signal_label} |
+| **Transition** | {mode} |
+| **Orders** | {orders_str} |
+| **Position** | {record['current_qty']} → {record['target_qty']} (delta {record['delta']:+d}) |
+| **Equity** | ${record['account_equity']:,.2f} |
+| **Target qty** | {record['target_abs_qty']} shares |
+| **Prev close** | ${record['prev_close']:.2f} ({record['prev_date']}) |
+| **Log return lag-1** | {record['log_return_lag1']:+.6f} |
+"""
+    try:
+        with open(summary_path, "a") as f:
+            f.write(md)
+    except OSError:
+        pass
 
 
 if __name__ == "__main__":
