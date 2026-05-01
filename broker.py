@@ -88,6 +88,9 @@ class Broker:
     def get_account_cash(self) -> float:
         return float(self._client.get_account().cash)
 
+    def get_account_equity(self) -> float:
+        return float(self._client.get_account().equity)
+
     def get_position_signed_qty(self, symbol: str) -> int:
         """Positive long, negative short, 0 flat. Handles 404 (no position) cleanly."""
         try:

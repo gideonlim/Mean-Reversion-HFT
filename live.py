@@ -179,8 +179,8 @@ def main(argv: list[str] | None = None) -> int:
 
     # 6. Read current state (read once, reuse)
     current_qty = broker.get_position_signed_qty(SETTINGS.SYMBOL)
-    cash = broker.get_account_cash()
-    target_abs_qty = max(int(cash * SETTINGS.POSITION_FRACTION / closed.prev_close), 0)
+    equity = broker.get_account_equity()
+    target_abs_qty = max(int(equity * SETTINGS.POSITION_FRACTION / closed.prev_close), 0)
 
     # 7. Decide
     shortable = asset.shortable and asset.easy_to_borrow and not SETTINGS.LONG_ONLY
@@ -235,7 +235,7 @@ def main(argv: list[str] | None = None) -> int:
         ],
         "order_ids": submitted_ids,
         "client_order_ids": submitted_coids,
-        "account_cash": cash,
+        "account_equity": equity,
         "target_abs_qty": target_abs_qty,
         "shortable": shortable,
         "dry_run": args.dry_run,
