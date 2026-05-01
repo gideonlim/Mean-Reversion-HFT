@@ -1,0 +1,35 @@
+name: Daily Report
+
+on:
+  schedule:
+    - cron: "0 22 * * *"  # 22:00 UTC = 8am AEST / 9am AEDT daily
+  workflow_dispatch: {}   # Manual trigger
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e .
+
+      - name: Generate report
+        env:
+          APCA_API_KEY_ID: ${{ secrets.APCA_API_KEY_ID }}
+          APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
+        run: python report.py
+
+      - name: Upload equity chart
+        uses: actions/upload-artifact@v4
+        with:
+          name: equity-chart-${{ github.run_number }}
+          path: logs/report_equity.png
+          retention-days: 90
