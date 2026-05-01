@@ -9,7 +9,7 @@ on:
   workflow_dispatch: {}
 
 concurrency:
-  group: monitor-close
+  group: trade-log-writer
   cancel-in-progress: false
 
 jobs:

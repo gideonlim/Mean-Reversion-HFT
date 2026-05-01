@@ -8,7 +8,7 @@ on:
   workflow_dispatch: {}  # Manual trigger for testing
 
 concurrency:
-  group: live-trade
+  group: trade-log-writer
   cancel-in-progress: false
 
 jobs:
