@@ -91,6 +91,31 @@ def build_equity_series(entries: list[dict]) -> list[tuple[date, float]]:
     )
 
 
+def _streak_stats(daily_pnl: list[float]) -> tuple[int, int, int]:
+    """Return (max_win_streak, max_loss_streak, current_streak)."""
+    if not daily_pnl:
+        return 0, 0, 0
+    max_win = max_loss = 0
+    cur = 0
+    sign = 0  # +1 win streak, -1 loss streak, 0 break-even
+    for p in daily_pnl:
+        s = 1 if p > 0 else (-1 if p < 0 else 0)
+        if s == 0:
+            cur = 0
+            sign = 0
+            continue
+        if s == sign:
+            cur += s  # extend
+        else:
+            cur = s   # reset
+            sign = s
+        if cur > max_win:
+            max_win = cur
+        if cur < -max_loss:
+            max_loss = -cur
+    return max_win, max_loss, cur
+
+
 def compute_report_stats(
     equity_series: list[tuple[date, float]],
     current_equity: float,
@@ -112,33 +137,69 @@ def compute_report_stats(
 
     if has_enough_history:
         ann_factor = 365.25 / n_days
-        annualized_return = ((current_equity / starting_capital) ** ann_factor - 1) * 100
+        annualized_return_pct = ((current_equity / starting_capital) ** ann_factor - 1) * 100
     else:
-        annualized_return = None
+        annualized_return_pct = None
 
-    # Daily log returns for Sharpe
-    daily_returns = []
+    # Daily log returns and dollar P&L
+    log_returns: list[float] = []
+    daily_pnl: list[float] = []
     for i in range(1, len(equities)):
         if equities[i - 1] > 0:
-            daily_returns.append(math.log(equities[i] / equities[i - 1]))
+            log_returns.append(math.log(equities[i] / equities[i - 1]))
+        daily_pnl.append(equities[i] - equities[i - 1])
 
-    if len(daily_returns) > 1 and has_enough_history:
-        mu = np.mean(daily_returns)
-        sigma = np.std(daily_returns, ddof=1)
+    if len(log_returns) > 1 and has_enough_history:
+        mu = float(np.mean(log_returns))
+        sigma = float(np.std(log_returns, ddof=1))
         daily_sharpe = mu / sigma if sigma > 1e-12 else 0.0
         ann_sharpe = daily_sharpe * math.sqrt(252)
+        # Sortino: downside-only std
+        downside = [r for r in log_returns if r < 0]
+        if len(downside) > 1:
+            downside_std = float(np.std(downside, ddof=1))
+            sortino = (mu / downside_std) * math.sqrt(252) if downside_std > 1e-12 else 0.0
+        else:
+            sortino = 0.0
     else:
         daily_sharpe = None
         ann_sharpe = None
+        sortino = None
 
-    # Drawdown — peak starts at MAX(starting_capital, first reading) so any
-    # early loss is correctly measured against the true high-water mark.
+    # High-water mark and drawdown — peak starts at max(starting_capital, first reading)
+    # so any early loss is correctly measured against the true high-water mark.
     peak = max(starting_capital, equities[0])
     max_dd = 0.0
     for eq in equities:
         peak = max(peak, eq)
         dd = (eq / peak - 1) * 100
         max_dd = min(max_dd, dd)
+    hwm = max(peak, current_equity)
+
+    # Calmar = annualized return / abs(max DD). Both as percentages.
+    if has_enough_history and annualized_return_pct is not None and max_dd < -1e-12:
+        calmar = annualized_return_pct / abs(max_dd)
+    else:
+        calmar = None
+
+    # Trade-level metrics computed on daily P&L
+    wins = [p for p in daily_pnl if p > 0]
+    losses = [p for p in daily_pnl if p < 0]
+    total_trades = len(daily_pnl)
+    win_rate_pct = (len(wins) / total_trades * 100) if total_trades > 0 else 0.0
+
+    avg_win = float(np.mean(wins)) if wins else 0.0
+    avg_loss = float(np.mean(losses)) if losses else 0.0  # negative number
+    largest_win = max(daily_pnl) if daily_pnl else 0.0
+    largest_loss = min(daily_pnl) if daily_pnl else 0.0
+    expectancy = float(np.mean(daily_pnl)) if daily_pnl else 0.0
+
+    gross_win = sum(wins)
+    gross_loss = abs(sum(losses))
+    profit_factor = (gross_win / gross_loss) if gross_loss > 1e-12 else (float("inf") if gross_win > 0 else 0.0)
+    win_loss_ratio = (avg_win / abs(avg_loss)) if abs(avg_loss) > 1e-12 else (float("inf") if avg_win > 0 else 0.0)
+
+    max_win_streak, max_loss_streak, current_streak = _streak_stats(daily_pnl)
 
     # Position summary
     pos_str = "flat"
@@ -148,18 +209,39 @@ def compute_report_stats(
 
     return {
         "current_equity": current_equity,
+        "starting_capital": starting_capital,
+        "hwm": hwm,
         "total_return_pct": total_return,
         "total_pnl": current_equity - starting_capital,
-        "annualized_return_pct": annualized_return,
+        "annualized_return_pct": annualized_return_pct,
         "daily_sharpe": daily_sharpe,
         "annualized_sharpe": ann_sharpe,
+        "sortino": sortino,
+        "calmar": calmar,
         "max_drawdown_pct": max_dd,
         "trading_days": len(equities),
         "calendar_days": n_days,
         "position": pos_str,
-        "starting_capital": starting_capital,
+        # Trade-level (using daily P&L as a "trade")
+        "total_trades": total_trades,
+        "win_rate_pct": win_rate_pct,
+        "profit_factor": profit_factor,
+        "expectancy": expectancy,
+        "avg_win": avg_win,
+        "avg_loss": avg_loss,
+        "largest_win": largest_win,
+        "largest_loss": largest_loss,
+        "win_loss_ratio": win_loss_ratio,
+        # Streaks
+        "max_win_streak": max_win_streak,
+        "max_loss_streak": max_loss_streak,
+        "current_streak": current_streak,
+        # Misc
         "has_enough_history": has_enough_history,
         "min_days_for_annualization": SETTINGS.MIN_DAYS_FOR_ANNUALIZATION,
+        # Series for charts
+        "_equities_for_chart": equities,
+        "_dates_for_chart": dates,
     }
 
 
@@ -168,7 +250,7 @@ def plot_equity(
     current_equity: float,
     out_path: Path,
 ) -> Path:
-    """Plot equity curve and save to PNG at out_path."""
+    """Plot equity curve with drawdown subplot. Save PNG at out_path."""
     dates = [d for d, _ in equity_series]
     equities = [eq for _, eq in equity_series]
 
@@ -178,20 +260,43 @@ def plot_equity(
         dates.append(today)
         equities.append(current_equity)
 
-    fig, ax = plt.subplots(figsize=(10, 4.5))
-    ax.plot(dates, equities, linewidth=1.8, color="#2563eb")
-    ax.axhline(SETTINGS.STARTING_CAPITAL, color="grey", linewidth=0.7, linestyle="--", alpha=0.6)
-    ax.fill_between(dates, SETTINGS.STARTING_CAPITAL, equities, alpha=0.08, color="#2563eb")
+    # Compute high-water mark + drawdown series
+    hwm_series = []
+    dd_series = []
+    peak = max(SETTINGS.STARTING_CAPITAL, equities[0])
+    for eq in equities:
+        peak = max(peak, eq)
+        hwm_series.append(peak)
+        dd_series.append((eq / peak - 1) * 100)
 
-    ax.set_title(f"{SETTINGS.SYMBOL} Mean-Reversion — Account Equity", fontsize=13, fontweight="bold")
-    ax.set_ylabel("Equity ($)")
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
-    ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+    fig, (ax_eq, ax_dd) = plt.subplots(
+        2, 1, figsize=(10, 6),
+        gridspec_kw={"height_ratios": [3, 1], "hspace": 0.05},
+        sharex=True,
+    )
+
+    # Equity panel
+    ax_eq.plot(dates, equities, linewidth=1.8, color="#2563eb", label="Equity")
+    ax_eq.plot(dates, hwm_series, linewidth=0.9, color="#9ca3af", linestyle="--", label="High Water Mark")
+    ax_eq.axhline(SETTINGS.STARTING_CAPITAL, color="grey", linewidth=0.6, linestyle=":", alpha=0.7)
+    ax_eq.fill_between(dates, SETTINGS.STARTING_CAPITAL, equities, alpha=0.08, color="#2563eb")
+    ax_eq.set_title(f"{SETTINGS.SYMBOL} Mean-Reversion — Account Equity", fontsize=13, fontweight="bold")
+    ax_eq.set_ylabel("Equity ($)")
+    ax_eq.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"${x:,.0f}"))
+    ax_eq.grid(True, alpha=0.3)
+    ax_eq.legend(loc="lower right", fontsize=9)
+
+    # Drawdown panel
+    ax_dd.fill_between(dates, dd_series, 0, color="#dc2626", alpha=0.25)
+    ax_dd.plot(dates, dd_series, linewidth=1.0, color="#dc2626")
+    ax_dd.set_ylabel("Drawdown (%)")
+    ax_dd.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.1f}%"))
+    ax_dd.grid(True, alpha=0.3)
+    ax_dd.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+    ax_dd.xaxis.set_major_locator(mdates.AutoDateLocator())
     fig.autofmt_xdate(rotation=30)
-    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"${x:,.0f}"))
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
 
+    fig.tight_layout()
     out_path.parent.mkdir(exist_ok=True)
     fig.savefig(out_path, dpi=140)
     plt.close(fig)
@@ -204,6 +309,25 @@ def _fmt_pct(value: float | None) -> str:
 
 def _fmt_sharpe(value: float | None) -> str:
     return f"{value:.4f}" if value is not None else f"N/A (need >={SETTINGS.MIN_DAYS_FOR_ANNUALIZATION} days)"
+
+
+def _fmt_ratio(value: float | None) -> str:
+    if value is None:
+        return f"N/A (need >={SETTINGS.MIN_DAYS_FOR_ANNUALIZATION} days)"
+    if value == float("inf"):
+        return "inf"
+    return f"{value:.2f}"
+
+
+def _fmt_money(value: float, signed: bool = False) -> str:
+    sign = "+" if signed and value >= 0 else ("-" if value < 0 else "")
+    return f"{sign}${abs(value):,.2f}"
+
+
+def _fmt_streak(value: int) -> str:
+    if value == 0:
+        return "—"
+    return f"{abs(value)} {'win(s)' if value > 0 else 'loss(es)'}"
 
 
 def format_markdown(stats: dict, recent_orders: list[dict]) -> str:
@@ -227,17 +351,37 @@ def format_markdown(stats: dict, recent_orders: list[dict]) -> str:
 |---|---|
 | **Equity** | ${stats['current_equity']:,.2f} |
 | **Starting Capital** | ${stats['starting_capital']:,.2f} |
+| **High Water Mark** | ${stats['hwm']:,.2f} |
 | **Total P&L** | {pnl_sign}${stats['total_pnl']:,.2f} ({pnl_sign}{stats['total_return_pct']:.2f}%) |
 | **Annualized Return** | {_fmt_pct(stats['annualized_return_pct'])} |
 | **Position** | {stats['position']} |
 
-### Risk
+### Risk-Adjusted Returns
 | | |
 |---|---|
 | **Daily Sharpe** | {_fmt_sharpe(stats['daily_sharpe'])} |
 | **Annualized Sharpe** | {_fmt_sharpe(stats['annualized_sharpe'])} |
+| **Sortino** | {_fmt_sharpe(stats['sortino'])} |
+| **Calmar** | {_fmt_ratio(stats['calmar'])} |
 | **Max Drawdown** | {stats['max_drawdown_pct']:.2f}% |
-| **Trading Days** | {stats['trading_days']} ({stats['calendar_days']} calendar days) |
+
+### Trade-Level (daily P&L)
+| | |
+|---|---|
+| **Total Days** | {stats['trading_days']} ({stats['calendar_days']} calendar days) |
+| **Win Rate** | {stats['win_rate_pct']:.1f}% |
+| **Profit Factor** | {_fmt_ratio(stats['profit_factor'])} |
+| **Expectancy** | {_fmt_money(stats['expectancy'], signed=True)} / day |
+| **Avg Win / Avg Loss** | {_fmt_money(stats['avg_win'], signed=True)} / {_fmt_money(stats['avg_loss'], signed=True)} |
+| **Largest Win / Loss** | {_fmt_money(stats['largest_win'], signed=True)} / {_fmt_money(stats['largest_loss'], signed=True)} |
+| **Win/Loss Ratio** | {_fmt_ratio(stats['win_loss_ratio'])} |
+
+### Streaks
+| | |
+|---|---|
+| **Max Win Streak** | {stats['max_win_streak']} |
+| **Max Loss Streak** | {stats['max_loss_streak']} |
+| **Current Streak** | {_fmt_streak(stats['current_streak'])} |
 
 ### Recent Orders
 | Date | Side | Status | Fill Price |
@@ -348,26 +492,50 @@ def generate_pdf(
     account_rows = [
         ["Equity", f"${stats['current_equity']:,.2f}"],
         ["Starting Capital", f"${stats['starting_capital']:,.2f}"],
+        ["High Water Mark", f"${stats['hwm']:,.2f}"],
         ["Total P&L", f"{pnl_sign}${stats['total_pnl']:,.2f}  ({pnl_sign}{stats['total_return_pct']:.2f}%)"],
         ["Annualized Return", _fmt_pct(stats["annualized_return_pct"])],
         ["Position", stats["position"]],
     ]
-    story.append(_kv_table(account_rows, pnl_color_idx=2 if stats["total_pnl"] != 0 else None, pnl_color=pnl_color))
+    story.append(_kv_table(account_rows, pnl_color_idx=3 if stats["total_pnl"] != 0 else None, pnl_color=pnl_color))
 
-    # Risk section
-    story.append(Paragraph("Risk", h2))
+    # Risk-adjusted returns
+    story.append(Paragraph("Risk-Adjusted Returns", h2))
     risk_rows = [
         ["Daily Sharpe", _fmt_sharpe(stats["daily_sharpe"])],
         ["Annualized Sharpe", _fmt_sharpe(stats["annualized_sharpe"])],
+        ["Sortino", _fmt_sharpe(stats["sortino"])],
+        ["Calmar", _fmt_ratio(stats["calmar"])],
         ["Max Drawdown", f"{stats['max_drawdown_pct']:.2f}%"],
-        ["Trading Days", f"{stats['trading_days']}  ({stats['calendar_days']} calendar days)"],
     ]
     story.append(_kv_table(risk_rows))
 
-    # Equity chart
+    # Equity chart with drawdown subplot
     if chart_path.exists():
-        story.append(Paragraph("Equity Curve", h2))
-        story.append(Image(str(chart_path), width=16 * cm, height=7 * cm))
+        story.append(Paragraph("Equity Curve & Drawdown", h2))
+        story.append(Image(str(chart_path), width=16 * cm, height=9.6 * cm))
+
+    # Trade-level metrics
+    story.append(Paragraph("Trade-Level (daily P&L)", h2))
+    trade_rows = [
+        ["Total Days", f"{stats['trading_days']}  ({stats['calendar_days']} calendar days)"],
+        ["Win Rate", f"{stats['win_rate_pct']:.1f}%"],
+        ["Profit Factor", _fmt_ratio(stats["profit_factor"])],
+        ["Expectancy", f"{_fmt_money(stats['expectancy'], signed=True)} / day"],
+        ["Avg Win / Avg Loss", f"{_fmt_money(stats['avg_win'], signed=True)} / {_fmt_money(stats['avg_loss'], signed=True)}"],
+        ["Largest Win / Loss", f"{_fmt_money(stats['largest_win'], signed=True)} / {_fmt_money(stats['largest_loss'], signed=True)}"],
+        ["Win/Loss Ratio", _fmt_ratio(stats["win_loss_ratio"])],
+    ]
+    story.append(_kv_table(trade_rows))
+
+    # Streak analysis
+    story.append(Paragraph("Streaks", h2))
+    streak_rows = [
+        ["Max Win Streak", str(stats["max_win_streak"])],
+        ["Max Loss Streak", str(stats["max_loss_streak"])],
+        ["Current Streak", _fmt_streak(stats["current_streak"])],
+    ]
+    story.append(_kv_table(streak_rows))
 
     # Recent orders
     story.append(Paragraph("Recent Orders", h2))
@@ -524,7 +692,7 @@ def send_email_report(
     csv_path: Path | None = None,
 ) -> None:
     """Send the report as an HTML email with the equity chart attached via Gmail SMTP."""
-    email_addr = os.environ.get("EMAIL_ADDRESS")
+    email_addr = os.environ.get("EMAIL_USERNAME")
     email_pass = os.environ.get("EMAIL_APP_PASSWORD")
     if not email_addr or not email_pass:
         print("EMAIL_ADDRESS / EMAIL_APP_PASSWORD not set — skipping email")
@@ -545,19 +713,42 @@ def send_email_report(
 <h2 style="margin-bottom: 4px;">Mean-Reversion Daily Report</h2>
 <p style="color: #6b7280; margin-top: 0;">{et_today().isoformat()} &middot; {SETTINGS.SYMBOL}</p>
 
-<table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
-<tr><td style="padding: 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Equity</td>
-    <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; font-weight: bold; text-align: right;">${stats.get('current_equity', 0):,.2f}</td></tr>
-<tr><td style="padding: 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Total P&L</td>
-    <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; font-weight: bold; text-align: right; color: {pnl_color};">{pnl_sign}${stats.get('total_pnl', 0):,.2f} ({pnl_sign}{stats.get('total_return_pct', 0):.2f}%)</td></tr>
-<tr><td style="padding: 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Position</td>
-    <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">{stats.get('position', 'flat')}</td></tr>
-<tr><td style="padding: 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Ann. Sharpe</td>
-    <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">{_fmt_sharpe(stats.get('annualized_sharpe'))}</td></tr>
-<tr><td style="padding: 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Max Drawdown</td>
-    <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">{stats.get('max_drawdown_pct', 0):.2f}%</td></tr>
-<tr><td style="padding: 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Trading Days</td>
-    <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">{stats.get('trading_days', 0)}</td></tr>
+<h3 style="margin-bottom: 8px;">Account</h3>
+<table style="border-collapse: collapse; width: 100%; margin-bottom: 16px;">
+<tr><td style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Equity</td>
+    <td style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb; font-weight: bold; text-align: right;">${stats.get('current_equity', 0):,.2f}</td></tr>
+<tr><td style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">High Water Mark</td>
+    <td style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">${stats.get('hwm', 0):,.2f}</td></tr>
+<tr><td style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Total P&L</td>
+    <td style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb; font-weight: bold; text-align: right; color: {pnl_color};">{pnl_sign}${stats.get('total_pnl', 0):,.2f} ({pnl_sign}{stats.get('total_return_pct', 0):.2f}%)</td></tr>
+<tr><td style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Position</td>
+    <td style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">{stats.get('position', 'flat')}</td></tr>
+</table>
+
+<h3 style="margin-bottom: 8px;">Risk-Adjusted Returns</h3>
+<table style="border-collapse: collapse; width: 100%; margin-bottom: 16px;">
+<tr><td style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Annualized Sharpe</td>
+    <td style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">{_fmt_sharpe(stats.get('annualized_sharpe'))}</td></tr>
+<tr><td style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Sortino</td>
+    <td style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">{_fmt_sharpe(stats.get('sortino'))}</td></tr>
+<tr><td style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Calmar</td>
+    <td style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">{_fmt_ratio(stats.get('calmar'))}</td></tr>
+<tr><td style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Max Drawdown</td>
+    <td style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">{stats.get('max_drawdown_pct', 0):.2f}%</td></tr>
+</table>
+
+<h3 style="margin-bottom: 8px;">Trade-Level (daily P&L)</h3>
+<table style="border-collapse: collapse; width: 100%; margin-bottom: 16px;">
+<tr><td style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Win Rate / Profit Factor</td>
+    <td style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">{stats.get('win_rate_pct', 0):.1f}% &middot; PF {_fmt_ratio(stats.get('profit_factor'))}</td></tr>
+<tr><td style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Expectancy / day</td>
+    <td style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">{_fmt_money(stats.get('expectancy', 0), signed=True)}</td></tr>
+<tr><td style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Avg Win / Loss</td>
+    <td style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">{_fmt_money(stats.get('avg_win', 0), signed=True)} / {_fmt_money(stats.get('avg_loss', 0), signed=True)}</td></tr>
+<tr><td style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Largest Win / Loss</td>
+    <td style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">{_fmt_money(stats.get('largest_win', 0), signed=True)} / {_fmt_money(stats.get('largest_loss', 0), signed=True)}</td></tr>
+<tr><td style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Streaks (max win / max loss / current)</td>
+    <td style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb; text-align: right;">{stats.get('max_win_streak', 0)} / {stats.get('max_loss_streak', 0)} / {_fmt_streak(stats.get('current_streak', 0))}</td></tr>
 </table>
 
 <h3>Equity Curve</h3>
