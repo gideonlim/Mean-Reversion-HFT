@@ -1,0 +1,48 @@
+name: Monitor (Market Close)
+
+on:
+  schedule:
+    # 22:00 UTC Mon-Fri = 6:00 PM EDT / 5:00 PM EST.
+    # Runs after market close and MOC fills have settled, before the daily report (20:00 UTC).
+    # On early-close days (1:00 PM ET close), fills settle well before this.
+    - cron: "0 22 * * 1-5"
+  workflow_dispatch: {}
+
+concurrency:
+  group: monitor-close
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e .
+
+      - name: Snapshot (market close)
+        env:
+          APCA_API_KEY_ID: ${{ secrets.APCA_API_KEY_ID }}
+          APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
+        run: python monitor.py market_close
+
+      - name: Commit trade log
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add logs/trade_log.json
+          git diff --cached --quiet || git commit -m "Monitor snapshot (market_close) [skip ci]"
+          git pull --rebase
+          git push

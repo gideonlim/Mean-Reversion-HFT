@@ -106,7 +106,11 @@ def save_log(entries: list[dict]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Snapshot account/positions to trade_log.json")
-    parser.add_argument("label", choices=["pre", "post"], help="Snapshot label: 'pre' or 'post' trade")
+    parser.add_argument(
+        "label",
+        choices=["pre", "post", "market_open", "market_close"],
+        help="Snapshot label: 'pre'/'post' (around live trade), 'market_open'/'market_close' (standalone)",
+    )
     args = parser.parse_args(argv)
 
     load_dotenv()

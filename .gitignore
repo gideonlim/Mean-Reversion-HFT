@@ -4,7 +4,7 @@ venv/
 __pycache__/
 *.pyc
 .pytest_cache/
-logs/
+logs/*
 !logs/trade_log.json
 *.png
 *.csv
