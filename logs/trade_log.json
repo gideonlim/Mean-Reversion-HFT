@@ -167,5 +167,93 @@
         "client_order_id": "meanrev-2026-04-30-SPY-scale"
       }
     ]
+  },
+  {
+    "timestamp": "2026-05-01T06:29:05.018765-04:00",
+    "et_date": "2026-05-01",
+    "label": "pre",
+    "account": {
+      "equity": 50239.37,
+      "cash": 19271.2,
+      "buying_power": 69510.57,
+      "portfolio_value": 50239.37
+    },
+    "positions": [
+      {
+        "symbol": "SPY",
+        "side": "long",
+        "qty": 43,
+        "avg_entry_price": 714.623256,
+        "market_value": 30968.17,
+        "unrealized_pl": 239.369992,
+        "unrealized_plpc": 0.00779
+      }
+    ],
+    "recent_orders": [
+      {
+        "created_at": "2026-04-29 18:55:07",
+        "side": "buy",
+        "qty": 66,
+        "filled_qty": 25,
+        "time_in_force": "cls",
+        "status": "expired",
+        "filled_avg_price": 711.4792,
+        "client_order_id": "meanrev-2026-04-29-SPY-open"
+      },
+      {
+        "created_at": "2026-04-30 18:52:07",
+        "side": "buy",
+        "qty": 18,
+        "filled_qty": 18,
+        "time_in_force": "cls",
+        "status": "filled",
+        "filled_avg_price": 718.99,
+        "client_order_id": "meanrev-2026-04-30-SPY-scale"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-05-01T06:29:07.236681-04:00",
+    "et_date": "2026-05-01",
+    "label": "post",
+    "account": {
+      "equity": 50239.37,
+      "cash": 19271.2,
+      "buying_power": 69510.57,
+      "portfolio_value": 50239.37
+    },
+    "positions": [
+      {
+        "symbol": "SPY",
+        "side": "long",
+        "qty": 43,
+        "avg_entry_price": 714.623256,
+        "market_value": 30968.17,
+        "unrealized_pl": 239.369992,
+        "unrealized_plpc": 0.00779
+      }
+    ],
+    "recent_orders": [
+      {
+        "created_at": "2026-04-29 18:55:07",
+        "side": "buy",
+        "qty": 66,
+        "filled_qty": 25,
+        "time_in_force": "cls",
+        "status": "expired",
+        "filled_avg_price": 711.4792,
+        "client_order_id": "meanrev-2026-04-29-SPY-open"
+      },
+      {
+        "created_at": "2026-04-30 18:52:07",
+        "side": "buy",
+        "qty": 18,
+        "filled_qty": 18,
+        "time_in_force": "cls",
+        "status": "filled",
+        "filled_avg_price": 718.99,
+        "client_order_id": "meanrev-2026-04-30-SPY-scale"
+      }
+    ]
   }
 ]
