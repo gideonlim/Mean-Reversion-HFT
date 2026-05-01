@@ -299,5 +299,28 @@
         "client_order_id": "meanrev-2026-04-30-SPY-scale"
       }
     ]
+  },
+  {
+    "timestamp": "2026-05-01T10:12:53.697237-04:00",
+    "et_date": "2026-05-01",
+    "label": "market_open",
+    "account": {
+      "equity": 50424.41,
+      "cash": 19271.2,
+      "buying_power": 69695.61,
+      "portfolio_value": 50424.41
+    },
+    "positions": [
+      {
+        "symbol": "SPY",
+        "side": "long",
+        "qty": 43,
+        "avg_entry_price": 714.623256,
+        "market_value": 31153.2076,
+        "unrealized_pl": 424.407592,
+        "unrealized_plpc": 0.01381
+      }
+    ],
+    "open_orders": []
   }
 ]
