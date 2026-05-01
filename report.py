@@ -201,11 +201,16 @@ def compute_report_stats(
 
     max_win_streak, max_loss_streak, current_streak = _streak_stats(daily_pnl)
 
-    # Position summary
-    pos_str = "flat"
-    if positions:
+    # Position summary string
+    if not positions:
+        pos_str = "flat"
+    elif len(positions) == 1:
         p = positions[0]
         pos_str = f"{p['qty']} {p['symbol']} {p['side']} @ ${p['avg_entry_price']:.2f}"
+    else:
+        gross = sum(abs(p["market_value"]) for p in positions)
+        unrealized = sum(p["unrealized_pl"] for p in positions)
+        pos_str = f"{len(positions)} positions, gross ${gross:,.0f}, unrealized {unrealized:+,.2f}"
 
     return {
         "current_equity": current_equity,
@@ -280,7 +285,8 @@ def plot_equity(
     ax_eq.plot(dates, hwm_series, linewidth=0.9, color="#9ca3af", linestyle="--", label="High Water Mark")
     ax_eq.axhline(SETTINGS.STARTING_CAPITAL, color="grey", linewidth=0.6, linestyle=":", alpha=0.7)
     ax_eq.fill_between(dates, SETTINGS.STARTING_CAPITAL, equities, alpha=0.08, color="#2563eb")
-    ax_eq.set_title(f"{SETTINGS.SYMBOL} Mean-Reversion — Account Equity", fontsize=13, fontweight="bold")
+    title_label = ", ".join(SETTINGS.SYMBOLS)
+    ax_eq.set_title(f"{title_label} Mean-Reversion — Account Equity", fontsize=13, fontweight="bold")
     ax_eq.set_ylabel("Equity ($)")
     ax_eq.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"${x:,.0f}"))
     ax_eq.grid(True, alpha=0.3)
@@ -330,7 +336,7 @@ def _fmt_streak(value: int) -> str:
     return f"{abs(value)} {'win(s)' if value > 0 else 'loss(es)'}"
 
 
-def format_markdown(stats: dict, recent_orders: list[dict]) -> str:
+def format_markdown(stats: dict, recent_orders: list[dict], positions: list[dict] | None = None, weights: dict[str, float] | None = None) -> str:
     """Build the markdown report."""
     if not stats:
         return "**No data available yet.** Run backtest or wait for first trade.\n"
@@ -338,11 +344,32 @@ def format_markdown(stats: dict, recent_orders: list[dict]) -> str:
     pnl_sign = "+" if stats["total_pnl"] >= 0 else ""
 
     orders_rows = ""
-    for o in recent_orders[-5:]:
+    for o in recent_orders[-8:]:
         fill = f"${o['filled_avg_price']:.2f}" if o.get("filled_avg_price") else "—"
-        orders_rows += f"| {o['created_at'][:10]} | {o['side'].upper()} {o['filled_qty']}/{o['qty']} | {o['status']} | {fill} |\n"
+        sym = o.get("symbol", "")
+        sym_col = f"{sym} " if sym else ""
+        orders_rows += f"| {o['created_at'][:10]} | {sym_col}{o['side'].upper()} {o['filled_qty']}/{o['qty']} | {o['status']} | {fill} |\n"
     if not orders_rows:
         orders_rows = "| — | — | — | — |\n"
+
+    # Per-symbol breakdown table
+    breakdown_rows = ""
+    if positions or weights:
+        weights = weights or {}
+        # Show every configured symbol; positions may have a subset (only currently held)
+        configured = list(weights.keys()) if weights else [p["symbol"] for p in (positions or [])]
+        pos_by_sym = {p["symbol"]: p for p in (positions or [])}
+        for sym in configured:
+            p = pos_by_sym.get(sym)
+            w = weights.get(sym, 0.0)
+            if p:
+                breakdown_rows += (
+                    f"| {sym} | {w:.1%} | {p['side']} | {p['qty']} | "
+                    f"${p['avg_entry_price']:.2f} | ${p['market_value']:,.2f} | "
+                    f"{p['unrealized_pl']:+,.2f} |\n"
+                )
+            else:
+                breakdown_rows += f"| {sym} | {w:.1%} | flat | 0 | — | — | — |\n"
 
     return f"""## Daily Report — {et_today().isoformat()}
 
@@ -383,15 +410,17 @@ def format_markdown(stats: dict, recent_orders: list[dict]) -> str:
 | **Max Loss Streak** | {stats['max_loss_streak']} |
 | **Current Streak** | {_fmt_streak(stats['current_streak'])} |
 
+{("### Per-Symbol Breakdown" + chr(10) + "| Symbol | Weight | Side | Qty | Avg Entry | Market Value | Unrealized P&L |" + chr(10) + "|---|---|---|---|---|---|---|" + chr(10) + breakdown_rows) if breakdown_rows else ""}
+
 ### Recent Orders
-| Date | Side | Status | Fill Price |
+| Date | Symbol/Side | Status | Fill Price |
 |---|---|---|---|
 {orders_rows}
 """
 
 
 def fetch_all_orders(client: TradingClient) -> list:
-    """Fetch all orders for SETTINGS.SYMBOL since beginning of period (paginated)."""
+    """Fetch all orders for every symbol in SETTINGS.SYMBOLS (paginated)."""
     all_orders = []
     seen_ids = set()
     until = None
@@ -399,7 +428,7 @@ def fetch_all_orders(client: TradingClient) -> list:
     while True:
         kwargs = {
             "status": QueryOrderStatus.ALL,
-            "symbols": [SETTINGS.SYMBOL],
+            "symbols": list(SETTINGS.SYMBOLS),
             "limit": page_size,
             "direction": "desc",
         }
@@ -455,6 +484,8 @@ def generate_pdf(
     recent_orders: list[dict],
     chart_path: Path,
     out_path: Path,
+    positions: list[dict] | None = None,
+    weights: dict[str, float] | None = None,
 ) -> Path:
     """Render a PDF report using reportlab."""
     out_path.parent.mkdir(exist_ok=True)
@@ -462,7 +493,7 @@ def generate_pdf(
         str(out_path), pagesize=A4,
         leftMargin=2 * cm, rightMargin=2 * cm,
         topMargin=2 * cm, bottomMargin=2 * cm,
-        title=f"{SETTINGS.SYMBOL} Mean-Reversion Report",
+        title=f"{', '.join(SETTINGS.SYMBOLS)} Mean-Reversion Report",
     )
     styles = getSampleStyleSheet()
     h1 = styles["Heading1"]
@@ -471,9 +502,10 @@ def generate_pdf(
     muted = ParagraphStyle("muted", parent=body, textColor=colors.HexColor("#6b7280"), fontSize=9)
 
     story = []
-    story.append(Paragraph(f"{SETTINGS.SYMBOL} Mean-Reversion Report", h1))
+    symbols_str = ", ".join(SETTINGS.SYMBOLS)
+    story.append(Paragraph(f"{symbols_str} Mean-Reversion Report", h1))
     story.append(Paragraph(
-        f"{et_today().isoformat()} &middot; {SETTINGS.SYMBOL} &middot; "
+        f"{et_today().isoformat()} &middot; {symbols_str} &middot; "
         f"Long-only: {SETTINGS.LONG_ONLY}",
         muted,
     ))
@@ -537,22 +569,59 @@ def generate_pdf(
     ]
     story.append(_kv_table(streak_rows))
 
+    # Per-symbol breakdown (only if multi-symbol or weights provided)
+    if weights or positions:
+        story.append(Paragraph("Per-Symbol Breakdown", h2))
+        bd_rows = [["Symbol", "Weight", "Side", "Qty", "Avg Entry", "Mkt Value", "Unrealized P&L"]]
+        configured = list((weights or {}).keys()) or [p["symbol"] for p in (positions or [])]
+        pos_by_sym = {p["symbol"]: p for p in (positions or [])}
+        for sym in configured:
+            p = pos_by_sym.get(sym)
+            w = (weights or {}).get(sym, 0.0)
+            if p:
+                bd_rows.append([
+                    sym,
+                    f"{w:.1%}",
+                    p["side"],
+                    str(p["qty"]),
+                    f"${p['avg_entry_price']:.2f}",
+                    f"${p['market_value']:,.2f}",
+                    f"{p['unrealized_pl']:+,.2f}",
+                ])
+            else:
+                bd_rows.append([sym, f"{w:.1%}", "flat", "0", "—", "—", "—"])
+        bd_tbl = Table(bd_rows, colWidths=[2 * cm, 2 * cm, 1.8 * cm, 1.5 * cm, 2.5 * cm, 3 * cm, 3.2 * cm])
+        bd_tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f9fafb")),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("LINEBELOW", (0, 0), (-1, 0), 1, colors.HexColor("#e5e7eb")),
+            ("LINEBELOW", (0, 1), (-1, -1), 0.25, colors.HexColor("#e5e7eb")),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        story.append(bd_tbl)
+
     # Recent orders
     story.append(Paragraph("Recent Orders", h2))
-    order_rows = [["Date", "Side", "Qty (filled / total)", "Status", "Fill Price"]]
+    order_rows = [["Date", "Symbol", "Side", "Qty (filled / total)", "Status", "Fill Price"]]
     for o in recent_orders[-10:]:
         fill = f"${o['filled_avg_price']:.2f}" if o.get("filled_avg_price") else "—"
         order_rows.append([
             o["created_at"][:10],
+            o.get("symbol", ""),
             o["side"].upper(),
             f"{o['filled_qty']} / {o['qty']}",
             o["status"],
             fill,
         ])
     if len(order_rows) == 1:
-        order_rows.append(["—", "—", "—", "—", "—"])
+        order_rows.append(["—", "—", "—", "—", "—", "—"])
 
-    order_tbl = Table(order_rows, colWidths=[2.5 * cm, 2 * cm, 4 * cm, 3 * cm, 3 * cm])
+    order_tbl = Table(order_rows, colWidths=[2.2 * cm, 1.8 * cm, 1.5 * cm, 4 * cm, 2.5 * cm, 2.5 * cm])
     order_tbl.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f9fafb")),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
@@ -615,19 +684,20 @@ def main() -> int:
             "unrealized_pl": float(p.unrealized_pl),
         })
 
-    # Recent orders
+    # Recent orders across all configured symbols
     since = (et_now() - timedelta(days=7)).isoformat()
     try:
         orders = client.get_orders(filter=GetOrdersRequest(
             status=QueryOrderStatus.ALL,
             after=since,
-            symbols=[SETTINGS.SYMBOL],
-            limit=10,
+            symbols=list(SETTINGS.SYMBOLS),
+            limit=50,
         ))
         recent_orders = sorted(
             [
                 {
                     "created_at": str(o.created_at)[:19],
+                    "symbol": o.symbol,
                     "side": _enum_value(o.side),
                     "qty": int(float(o.qty)),
                     "filled_qty": int(float(o.filled_qty)) if o.filled_qty else 0,
@@ -644,9 +714,10 @@ def main() -> int:
     entries = load_log()
     equity_series = build_equity_series(entries)
     stats = compute_report_stats(equity_series, current_equity, positions)
+    weights = SETTINGS.get_weights()
 
     # Generate outputs
-    md = format_markdown(stats, recent_orders)
+    md = format_markdown(stats, recent_orders, positions=positions, weights=weights)
     print(md)
 
     # Date-stamped output paths in the report directory
@@ -657,7 +728,7 @@ def main() -> int:
     print(f"Equity chart saved to {chart_path}")
 
     # PDF report
-    pdf_path = generate_pdf(stats, recent_orders, chart_path, pdf_path)
+    pdf_path = generate_pdf(stats, recent_orders, chart_path, pdf_path, positions=positions, weights=weights)
     print(f"PDF report saved to {pdf_path}")
 
     # CSV of all trades since beginning of period
@@ -679,7 +750,7 @@ def main() -> int:
             pass
 
     # Email report with PDF + CSV attached
-    send_email_report(stats, recent_orders, chart_path, pdf_path, csv_path)
+    send_email_report(stats, recent_orders, chart_path, pdf_path, csv_path, positions=positions, weights=weights)
 
     return 0
 
@@ -690,6 +761,8 @@ def send_email_report(
     chart_path: Path,
     pdf_path: Path | None = None,
     csv_path: Path | None = None,
+    positions: list[dict] | None = None,
+    weights: dict[str, float] | None = None,
 ) -> None:
     """Send the report as an HTML email with the equity chart attached via Gmail SMTP."""
     email_addr = os.environ.get("EMAIL_USERNAME")
@@ -702,16 +775,59 @@ def send_email_report(
     pnl_color = "#16a34a" if stats.get("total_pnl", 0) >= 0 else "#dc2626"
 
     orders_html = ""
-    for o in recent_orders[-5:]:
+    for o in recent_orders[-8:]:
         fill = f"${o['filled_avg_price']:.2f}" if o.get("filled_avg_price") else "—"
-        orders_html += f"<tr><td>{o['created_at'][:10]}</td><td>{o['side'].upper()} {o['filled_qty']}/{o['qty']}</td><td>{o['status']}</td><td>{fill}</td></tr>\n"
+        sym = o.get("symbol", "")
+        orders_html += f"<tr><td>{o['created_at'][:10]}</td><td>{sym}</td><td>{o['side'].upper()} {o['filled_qty']}/{o['qty']}</td><td>{o['status']}</td><td>{fill}</td></tr>\n"
     if not orders_html:
-        orders_html = "<tr><td colspan='4'>No recent orders</td></tr>"
+        orders_html = "<tr><td colspan='5'>No recent orders</td></tr>"
+
+    # Per-symbol breakdown HTML
+    breakdown_html = ""
+    if weights or positions:
+        weights = weights or {}
+        configured = list(weights.keys()) or [p["symbol"] for p in (positions or [])]
+        pos_by_sym = {p["symbol"]: p for p in (positions or [])}
+        rows = []
+        for sym in configured:
+            p = pos_by_sym.get(sym)
+            w = weights.get(sym, 0.0)
+            if p:
+                upl = p["unrealized_pl"]
+                upl_color = "#16a34a" if upl >= 0 else "#dc2626"
+                rows.append(
+                    f'<tr><td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;">{sym}</td>'
+                    f'<td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;text-align:right;">{w:.1%}</td>'
+                    f'<td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;text-align:right;">{p["side"]}</td>'
+                    f'<td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;text-align:right;">{p["qty"]}</td>'
+                    f'<td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;text-align:right;">${p["avg_entry_price"]:.2f}</td>'
+                    f'<td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;text-align:right;">${p["market_value"]:,.2f}</td>'
+                    f'<td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;text-align:right;color:{upl_color};">{upl:+,.2f}</td></tr>'
+                )
+            else:
+                rows.append(
+                    f'<tr><td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;">{sym}</td>'
+                    f'<td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;text-align:right;">{w:.1%}</td>'
+                    f'<td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;text-align:right;color:#9ca3af;" colspan="5">flat</td></tr>'
+                )
+        breakdown_html = (
+            '<h3 style="margin-top:24px;margin-bottom:8px;">Per-Symbol Breakdown</h3>'
+            '<table style="border-collapse:collapse;width:100%;font-size:13px;">'
+            '<tr style="background:#f9fafb;">'
+            '<th style="padding:6px 8px;text-align:left;border-bottom:2px solid #e5e7eb;">Symbol</th>'
+            '<th style="padding:6px 8px;text-align:right;border-bottom:2px solid #e5e7eb;">Weight</th>'
+            '<th style="padding:6px 8px;text-align:right;border-bottom:2px solid #e5e7eb;">Side</th>'
+            '<th style="padding:6px 8px;text-align:right;border-bottom:2px solid #e5e7eb;">Qty</th>'
+            '<th style="padding:6px 8px;text-align:right;border-bottom:2px solid #e5e7eb;">Avg Entry</th>'
+            '<th style="padding:6px 8px;text-align:right;border-bottom:2px solid #e5e7eb;">Mkt Value</th>'
+            '<th style="padding:6px 8px;text-align:right;border-bottom:2px solid #e5e7eb;">Unrealized P&L</th>'
+            '</tr>' + "".join(rows) + '</table>'
+        )
 
     html = f"""\
 <html><body style="font-family: -apple-system, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
 <h2 style="margin-bottom: 4px;">Mean-Reversion Daily Report</h2>
-<p style="color: #6b7280; margin-top: 0;">{et_today().isoformat()} &middot; {SETTINGS.SYMBOL}</p>
+<p style="color: #6b7280; margin-top: 0;">{et_today().isoformat()} &middot; {", ".join(SETTINGS.SYMBOLS)}</p>
 
 <h3 style="margin-bottom: 8px;">Account</h3>
 <table style="border-collapse: collapse; width: 100%; margin-bottom: 16px;">
@@ -754,10 +870,13 @@ def send_email_report(
 <h3>Equity Curve</h3>
 <img src="cid:equity_chart" style="width: 100%; max-width: 580px;" alt="Equity curve" />
 
+{breakdown_html}
+
 <h3 style="margin-top: 24px;">Recent Orders</h3>
 <table style="border-collapse: collapse; width: 100%; font-size: 14px;">
 <tr style="background: #f9fafb;">
   <th style="padding: 6px 8px; text-align: left; border-bottom: 2px solid #e5e7eb;">Date</th>
+  <th style="padding: 6px 8px; text-align: left; border-bottom: 2px solid #e5e7eb;">Symbol</th>
   <th style="padding: 6px 8px; text-align: left; border-bottom: 2px solid #e5e7eb;">Side</th>
   <th style="padding: 6px 8px; text-align: left; border-bottom: 2px solid #e5e7eb;">Status</th>
   <th style="padding: 6px 8px; text-align: left; border-bottom: 2px solid #e5e7eb;">Fill</th>
@@ -774,7 +893,7 @@ def send_email_report(
 
     msg = EmailMessage()
     msg["Subject"] = (
-        f"{SETTINGS.SYMBOL} Report {et_today().isoformat()} — "
+        f"{', '.join(SETTINGS.SYMBOLS)} Report {et_today().isoformat()} — "
         f"{pnl_sign}${stats.get('total_pnl', 0):,.2f} ({pnl_sign}{stats.get('total_return_pct', 0):.2f}%)"
     )
     msg["From"] = email_addr

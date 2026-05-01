@@ -50,14 +50,14 @@ def snapshot(client: TradingClient, label: str) -> dict:
             "unrealized_plpc": float(p.unrealized_plpc) if p.unrealized_plpc else 0.0,
         })
 
-    # Recent orders for our symbol (last 2 days)
+    # Recent orders across all configured symbols (last 2 days)
     since = (now - timedelta(days=2)).isoformat()
     try:
         orders = client.get_orders(filter=GetOrdersRequest(
             status=QueryOrderStatus.ALL,
             after=since,
-            symbols=[SETTINGS.SYMBOL],
-            limit=10,
+            symbols=list(SETTINGS.SYMBOLS),
+            limit=50,
         ))
     except Exception:
         orders = []

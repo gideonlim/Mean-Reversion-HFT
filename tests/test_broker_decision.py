@@ -245,3 +245,75 @@ def test_signal_wiring_for_live():
 
     assert signal_from_lag(0.005) == -1   # yesterday up -> short today
     assert signal_from_lag(-0.005) == 1   # yesterday down -> long today
+
+
+# ---- Multi-symbol weight validation ---------------------------------------
+
+def test_get_weights_default_equal_weight():
+    from config import Settings
+
+    s = Settings(SYMBOLS=("SPY", "USO", "GLD", "SLV"))
+    w = s.get_weights()
+    assert w == {"SPY": 0.25, "USO": 0.25, "GLD": 0.25, "SLV": 0.25}
+
+
+def test_get_weights_single_symbol_default():
+    from config import Settings
+
+    s = Settings(SYMBOLS=("SPY",))
+    assert s.get_weights() == {"SPY": 1.0}
+
+
+def test_get_weights_custom_full_allocation():
+    from config import Settings
+
+    s = Settings(
+        SYMBOLS=("SPY", "USO", "GLD", "SLV"),
+        SYMBOL_WEIGHTS=(("SPY", 0.4), ("USO", 0.2), ("GLD", 0.2), ("SLV", 0.2)),
+    )
+    assert s.get_weights() == {"SPY": 0.4, "USO": 0.2, "GLD": 0.2, "SLV": 0.2}
+
+
+def test_get_weights_custom_partial_rest_is_cash():
+    """Sum < 1 is allowed; remainder stays as cash. Symbols with no weight default to 0."""
+    from config import Settings
+
+    s = Settings(
+        SYMBOLS=("SPY", "USO", "GLD"),
+        SYMBOL_WEIGHTS=(("SPY", 0.4), ("USO", 0.2)),  # GLD missing -> 0
+    )
+    w = s.get_weights()
+    assert w == {"SPY": 0.4, "USO": 0.2, "GLD": 0.0}
+    assert sum(w.values()) == pytest.approx(0.6)  # 0.4 cash buffer
+
+
+def test_get_weights_sum_exceeds_one_raises():
+    from config import Settings
+
+    s = Settings(SYMBOLS=("SPY", "USO"), SYMBOL_WEIGHTS=(("SPY", 0.7), ("USO", 0.5)))
+    with pytest.raises(ValueError, match="sum to"):
+        s.get_weights()
+
+
+def test_get_weights_negative_weight_raises():
+    from config import Settings
+
+    s = Settings(SYMBOLS=("SPY",), SYMBOL_WEIGHTS=(("SPY", -0.1),))
+    with pytest.raises(ValueError, match="non-negative"):
+        s.get_weights()
+
+
+def test_get_weights_unknown_symbol_raises():
+    from config import Settings
+
+    s = Settings(SYMBOLS=("SPY",), SYMBOL_WEIGHTS=(("USO", 0.5),))
+    with pytest.raises(ValueError, match="not in SYMBOLS"):
+        s.get_weights()
+
+
+def test_get_weights_empty_symbols_raises():
+    from config import Settings
+
+    s = Settings(SYMBOLS=())
+    with pytest.raises(ValueError, match="non-empty"):
+        s.get_weights()

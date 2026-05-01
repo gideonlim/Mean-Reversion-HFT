@@ -161,96 +161,166 @@ def main(argv: list[str] | None = None) -> int:
             _write_gha_skip(f"Missed window — ended {window.end.strftime('%H:%M ET')}, now {now.strftime('%H:%M ET')}")
             return 0
 
-    # 3. Asset tradability
-    asset = broker.get_asset(SETTINGS.SYMBOL)
-    if not asset.tradable:
-        log.warning("symbol %s not tradable today; exiting", SETTINGS.SYMBOL)
-        return 0
-
-    # 4. Cancel orphan orders
-    cancelled = broker.cancel_open_orders(SETTINGS.SYMBOL)
-    if cancelled:
-        log.info("cancelled %d orphan order(s) for %s", cancelled, SETTINGS.SYMBOL)
-
-    # 5. Compute signal from closed bars only
-    try:
-        closed = last_two_closed_bars(SETTINGS.SYMBOL, data_client, today_et=et_date)
-    except ValueError as e:
-        log.error("could not get closed bars: %s", e)
-        return 1
-    log_return_lag_1 = closed.log_return_lag_1
-    signal = signal_from_lag(log_return_lag_1)
-
-    # 6. Read current state (read once, reuse)
-    current_qty = broker.get_position_signed_qty(SETTINGS.SYMBOL)
+    # 3. Account equity (read once, reused for all symbol allocations)
     equity = broker.get_account_equity()
-    target_abs_qty = max(int(equity * SETTINGS.POSITION_FRACTION / closed.prev_close), 0)
+    weights = SETTINGS.get_weights()
 
-    # 7. Decide
-    shortable = asset.shortable and asset.easy_to_borrow and not SETTINGS.LONG_ONLY
-    decision = decide_transition(
-        signal=signal,
-        current_qty_signed=current_qty,
-        target_abs_qty=target_abs_qty,
-        shortable=shortable,
-    )
+    # 4. Per-symbol loop. One bad symbol must not abort the others.
+    per_symbol_records: list[dict] = []
+    any_failure = False  # submission_failed or unexpected — any error that should retry
 
-    if decision.transition == "shortable_skip":
-        log.warning("symbol %s not currently shortable (shortable=%s, etb=%s); staying flat", SETTINGS.SYMBOL, asset.shortable, asset.easy_to_borrow)
+    for symbol in SETTINGS.SYMBOLS:
+        weight = weights.get(symbol, 0.0)
+        record = _process_symbol(
+            symbol=symbol,
+            weight=weight,
+            equity=equity,
+            broker=broker,
+            data_client=data_client,
+            et_date=et_date,
+            dry_run=args.dry_run,
+            log=log,
+        )
+        per_symbol_records.append(record)
+        if record.get("error_kind") in ("submission_failed", "unexpected"):
+            any_failure = True
 
-    # 8. Submit orders
-    submitted_ids: list[str] = []
-    submitted_coids: list[str] = []
-    for intended in decision.orders:
-        coid = f"meanrev-{et_date.isoformat()}-{SETTINGS.SYMBOL}-{intended.action}"
-        if args.dry_run:
-            log.info("DRY_RUN would submit: side=%s qty=%d sym=%s coid=%s", intended.side.value, intended.qty, SETTINGS.SYMBOL, coid)
-            submitted_coids.append(coid)
-            continue
-        try:
-            o = broker.submit_moc(SETTINGS.SYMBOL, intended.qty, intended.side, coid)
-            submitted_ids.append(o.id)
-            submitted_coids.append(o.client_order_id)
-            log.info("submitted: side=%s qty=%d sym=%s coid=%s id=%s", o.side.value, o.qty, o.symbol, o.client_order_id, o.id)
-        except APIError as e:
-            if "client_order_id" in str(e).lower() or "duplicate" in str(e).lower():
-                log.info("order already submitted today (duplicate coid=%s); idempotent exit", coid)
-                return 0
-            log.error("MOC submission failed (action=%s, qty=%d): %s", intended.action, intended.qty, e)
-            return 1
-
-    # 9. Decision JSON line + marker
-    record = {
+    # 5. Aggregate decision record + marker + GHA summary
+    aggregate = {
         "et_run_date": et_date.isoformat(),
         "et_run_time": now.isoformat(),
-        "symbol": SETTINGS.SYMBOL,
-        "prev_prev_date": closed.prev_prev_date.isoformat(),
-        "prev_date": closed.prev_date.isoformat(),
-        "prev_prev_close": closed.prev_prev_close,
-        "prev_close": closed.prev_close,
-        "log_return_lag1": log_return_lag_1,
-        "signal": signal,
-        "current_qty": current_qty,
-        "target_qty": decision.target_qty,
-        "delta": decision.delta,
-        "transition_type": decision.transition,
-        "intended_orders": [
-            {"side": o.side.value, "qty": o.qty, "action": o.action} for o in decision.orders
-        ],
-        "order_ids": submitted_ids,
-        "client_order_ids": submitted_coids,
         "account_equity": equity,
-        "target_abs_qty": target_abs_qty,
-        "shortable": shortable,
+        "weights": weights,
+        "per_symbol": per_symbol_records,
         "dry_run": args.dry_run,
+        "any_failure": any_failure,
     }
-    log.info("DECISION %s", json.dumps(record))
+    log.info("DECISION %s", json.dumps(aggregate))
 
-    if not args.dry_run:
-        marker_path.write_text(json.dumps(record, indent=2))
+    # Only write marker if everything succeeded — failed symbols should retry on
+    # next scheduled run. Successful submissions are protected by their idempotent
+    # client_order_id (Alpaca rejects duplicates).
+    if not args.dry_run and not any_failure:
+        marker_path.write_text(json.dumps(aggregate, indent=2))
+    elif any_failure:
+        log.warning("at least one symbol failed; marker not written so next run will retry")
 
-    _write_gha_summary(record, args.dry_run)
-    return 0
+    _write_gha_summary_multi(aggregate)
+    return 1 if any_failure else 0
+
+
+def _process_symbol(
+    *,
+    symbol: str,
+    weight: float,
+    equity: float,
+    broker: Broker,
+    data_client: StockHistoricalDataClient,
+    et_date,
+    dry_run: bool,
+    log: logging.Logger,
+) -> dict:
+    """Run the per-symbol decision + submission flow. Captures errors per-symbol so
+    one failure doesn't abort siblings. Returns the per-symbol record dict.
+    """
+    rec: dict = {
+        "symbol": symbol,
+        "weight": weight,
+    }
+
+    if weight <= 0:
+        log.info("skipping %s: weight=0 (no allocation)", symbol)
+        rec["transition"] = "no_allocation"
+        return rec
+
+    try:
+        # Asset tradability + cancel orphans
+        asset = broker.get_asset(symbol)
+        if not asset.tradable:
+            log.warning("symbol %s not tradable today; skipping", symbol)
+            rec["transition"] = "not_tradable"
+            return rec
+
+        cancelled = broker.cancel_open_orders(symbol)
+        if cancelled:
+            log.info("cancelled %d orphan order(s) for %s", cancelled, symbol)
+
+        # Signal from closed bars
+        closed = last_two_closed_bars(symbol, data_client, today_et=et_date)
+        log_return_lag_1 = closed.log_return_lag_1
+        signal = signal_from_lag(log_return_lag_1)
+
+        current_qty = broker.get_position_signed_qty(symbol)
+        target_abs_qty = max(int(equity * SETTINGS.POSITION_FRACTION * weight / closed.prev_close), 0)
+
+        shortable = asset.shortable and asset.easy_to_borrow and not SETTINGS.LONG_ONLY
+        decision = decide_transition(
+            signal=signal,
+            current_qty_signed=current_qty,
+            target_abs_qty=target_abs_qty,
+            shortable=shortable,
+        )
+
+        if decision.transition == "shortable_skip":
+            log.warning("symbol %s not currently shortable (shortable=%s, etb=%s); staying flat",
+                        symbol, asset.shortable, asset.easy_to_borrow)
+
+        # Submit orders
+        submitted_ids: list[str] = []
+        submitted_coids: list[str] = []
+        for intended in decision.orders:
+            coid = f"meanrev-{et_date.isoformat()}-{symbol}-{intended.action}"
+            if dry_run:
+                log.info("DRY_RUN would submit: side=%s qty=%d sym=%s coid=%s",
+                         intended.side.value, intended.qty, symbol, coid)
+                submitted_coids.append(coid)
+                continue
+            try:
+                o = broker.submit_moc(symbol, intended.qty, intended.side, coid)
+                submitted_ids.append(o.id)
+                submitted_coids.append(o.client_order_id)
+                log.info("submitted: side=%s qty=%d sym=%s coid=%s id=%s",
+                         o.side.value, o.qty, o.symbol, o.client_order_id, o.id)
+            except APIError as e:
+                if "client_order_id" in str(e).lower() or "duplicate" in str(e).lower():
+                    log.info("%s already submitted today (duplicate coid=%s); idempotent skip",
+                             symbol, coid)
+                    rec.setdefault("error", str(e))
+                    rec.setdefault("error_kind", "duplicate")
+                    break
+                log.error("%s submission failed (action=%s, qty=%d): %s",
+                          symbol, intended.action, intended.qty, e)
+                rec["error"] = str(e)
+                rec["error_kind"] = "submission_failed"
+                break
+
+        rec.update({
+            "prev_prev_date": closed.prev_prev_date.isoformat(),
+            "prev_date": closed.prev_date.isoformat(),
+            "prev_prev_close": closed.prev_prev_close,
+            "prev_close": closed.prev_close,
+            "log_return_lag1": log_return_lag_1,
+            "signal": signal,
+            "current_qty": current_qty,
+            "target_qty": decision.target_qty,
+            "target_abs_qty": target_abs_qty,
+            "delta": decision.delta,
+            "transition": decision.transition,
+            "shortable": shortable,
+            "intended_orders": [
+                {"side": o.side.value, "qty": o.qty, "action": o.action}
+                for o in decision.orders
+            ],
+            "order_ids": submitted_ids,
+            "client_order_ids": submitted_coids,
+        })
+    except Exception as e:
+        log.exception("unexpected error for %s: %s", symbol, e)
+        rec["error"] = str(e)
+        rec["error_kind"] = "unexpected"
+        rec.setdefault("transition", "error")
+
+    return rec
 
 
 def _write_gha_skip(reason: str) -> None:
@@ -265,28 +335,39 @@ def _write_gha_skip(reason: str) -> None:
         pass
 
 
-def _write_gha_summary(record: dict, dry_run: bool) -> None:
-    """Write a markdown summary to GitHub Actions step summary (if running in GHA)."""
+def _write_gha_summary_multi(aggregate: dict) -> None:
+    """Write a multi-symbol markdown summary to GHA step summary (if running in GHA)."""
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not summary_path:
         return
-    signal_label = "LONG (buy)" if record["signal"] == 1 else "SHORT (sell)"
-    mode = "DRY RUN" if dry_run else record["transition_type"].upper()
-    orders_str = ", ".join(
-        f"{o['side']} {o['qty']} ({o['action']})" for o in record["intended_orders"]
-    ) or "none"
-    md = f"""## {record['symbol']} — {record['et_run_date']}
+    dry_run = aggregate.get("dry_run", False)
+    mode = "DRY RUN" if dry_run else "LIVE"
 
-| | |
-|---|---|
-| **Signal** | {signal_label} |
-| **Transition** | {mode} |
-| **Orders** | {orders_str} |
-| **Position** | {record['current_qty']} → {record['target_qty']} (delta {record['delta']:+d}) |
-| **Equity** | ${record['account_equity']:,.2f} |
-| **Target qty** | {record['target_abs_qty']} shares |
-| **Prev close** | ${record['prev_close']:.2f} ({record['prev_date']}) |
-| **Log return lag-1** | {record['log_return_lag1']:+.6f} |
+    rows = []
+    for r in aggregate["per_symbol"]:
+        sym = r["symbol"]
+        weight = r.get("weight", 0.0)
+        if r.get("transition") in ("no_allocation", "not_tradable") or "signal" not in r:
+            rows.append(
+                f"| {sym} | {weight:.2%} | — | {r.get('transition', 'error')} | — | — |"
+            )
+            continue
+        signal_label = "LONG" if r["signal"] == 1 else "SHORT"
+        orders_str = ", ".join(
+            f"{o['side']} {o['qty']}" for o in r.get("intended_orders", [])
+        ) or "—"
+        rows.append(
+            f"| {sym} | {weight:.2%} | {signal_label} | {r['transition']} | "
+            f"{r['current_qty']} → {r['target_qty']} | {orders_str} |"
+        )
+
+    md = f"""## Live Trade — {aggregate['et_run_date']} ({mode})
+
+**Account equity:** ${aggregate['account_equity']:,.2f}
+
+| Symbol | Weight | Signal | Transition | Position (current → target) | Orders |
+|---|---|---|---|---|---|
+{chr(10).join(rows)}
 """
     try:
         with open(summary_path, "a") as f:
