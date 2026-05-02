@@ -106,12 +106,20 @@ class Broker:
 
     # ---- Orders --------------------------------------------------------
 
-    def cancel_open_orders(self, symbol: str) -> int:
-        """Cancel all open orders for the given symbol. Returns count cancelled."""
+    def cancel_open_orders(self, symbol: str, *, keep_today: str | None = None) -> int:
+        """Cancel orphan open orders for the given symbol. Returns count cancelled.
+
+        If keep_today is set (e.g. "meanrev-2026-05-01"), orders whose
+        client_order_id starts with that prefix are skipped — they belong to
+        today's run and must not be cancelled.
+        """
         req = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol])
         open_orders = self._client.get_orders(filter=req)
         n = 0
         for o in open_orders:
+            if keep_today and o.client_order_id and o.client_order_id.startswith(keep_today):
+                log.debug("keeping today's order %s (coid=%s)", o.id, o.client_order_id)
+                continue
             try:
                 self._client.cancel_order_by_id(o.id)
                 n += 1

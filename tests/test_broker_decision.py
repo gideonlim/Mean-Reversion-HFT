@@ -204,6 +204,35 @@ def test_trade_window_market_closed_returns_none():
     assert broker.todays_trade_window() is None
 
 
+# ---- cancel_open_orders: keep today's orders, cancel orphans ---------------
+
+def test_cancel_open_orders_keeps_todays_orders():
+    """Orders with today's coid prefix must NOT be cancelled (they're ours)."""
+    client = MagicMock()
+    today_order = MagicMock(id="o1", client_order_id="meanrev-2026-05-01-SPY-flip_close")
+    orphan_order = MagicMock(id="o2", client_order_id="meanrev-2026-04-30-SPY-open")
+    client.get_orders.return_value = [today_order, orphan_order]
+    broker = Broker(client)
+
+    n = broker.cancel_open_orders("SPY", keep_today="meanrev-2026-05-01")
+    assert n == 1  # only the orphan cancelled
+    client.cancel_order_by_id.assert_called_once_with("o2")
+
+
+def test_cancel_open_orders_without_keep_today_cancels_all():
+    """Without keep_today, all open orders are cancelled (backward compat)."""
+    client = MagicMock()
+    client.get_orders.return_value = [
+        MagicMock(id="o1", client_order_id="meanrev-2026-05-01-SPY-flip_close"),
+        MagicMock(id="o2", client_order_id="meanrev-2026-04-30-SPY-open"),
+    ]
+    broker = Broker(client)
+
+    n = broker.cancel_open_orders("SPY")
+    assert n == 2
+    assert client.cancel_order_by_id.call_count == 2
+
+
 # ---- ET-date idempotency: client_order_id and marker use ET, not local time ----
 
 def test_client_order_id_uses_et_date_not_local_date():

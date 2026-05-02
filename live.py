@@ -241,7 +241,8 @@ def _process_symbol(
             rec["transition"] = "not_tradable"
             return rec
 
-        cancelled = broker.cancel_open_orders(symbol)
+        today_prefix = f"meanrev-{et_date.isoformat()}"
+        cancelled = broker.cancel_open_orders(symbol, keep_today=today_prefix)
         if cancelled:
             log.info("cancelled %d orphan order(s) for %s", cancelled, symbol)
 
