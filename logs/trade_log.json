@@ -829,5 +829,31 @@
     },
     "positions": [],
     "open_orders": []
+  },
+  {
+    "timestamp": "2026-05-04T17:45:46.107662-04:00",
+    "et_date": "2026-05-04",
+    "label": "pre",
+    "account": {
+      "equity": 50145.63,
+      "cash": 50145.63,
+      "buying_power": 100291.26,
+      "portfolio_value": 50145.63
+    },
+    "positions": [],
+    "open_orders": []
+  },
+  {
+    "timestamp": "2026-05-04T17:45:47.545894-04:00",
+    "et_date": "2026-05-04",
+    "label": "post",
+    "account": {
+      "equity": 50145.63,
+      "cash": 50145.63,
+      "buying_power": 100291.26,
+      "portfolio_value": 50145.63
+    },
+    "positions": [],
+    "open_orders": []
   }
 ]
