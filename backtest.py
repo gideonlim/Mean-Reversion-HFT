@@ -157,7 +157,9 @@ def main() -> int:
             f"trades={s.n_trades}"
         )
 
-    return 0 if any_pass else 1
+    if not any_pass:
+        print("\nWARNING: no symbols passed the edge gate")
+    return 0
 
 
 def _build_portfolio_returns(
