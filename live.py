@@ -40,7 +40,7 @@ from strategy import signal_from_lag
 class IntendedOrder:
     side: OrderSide
     qty: int
-    action: str  # "open" | "close" | "scale" | "flip_close" | "flip_open" | "shortable_skip_close"
+    action: str  # "open" | "scale" | "flip" | "shortable_skip_close"
 
 
 @dataclass
@@ -87,14 +87,15 @@ def decide_transition(
             delta=delta,
         )
 
-    close_side = OrderSide.SELL if current_qty_signed > 0 else OrderSide.BUY
-    open_side = OrderSide.BUY if target_qty_signed > 0 else OrderSide.SELL
+    # Flip long->short or short->long: both legs are always the SAME side (we cross
+    # zero in one direction). Combine into ONE order — Alpaca holds shares for any
+    # pending close order, so a separate open order would be rejected with
+    # "insufficient qty available". The single combined order closes the existing
+    # position and opens the new one atomically when it fills.
+    flip_side = OrderSide.SELL if delta < 0 else OrderSide.BUY
     return Decision(
         transition="flip",
-        orders=[
-            IntendedOrder(close_side, abs(current_qty_signed), "flip_close"),
-            IntendedOrder(open_side, abs(target_qty_signed), "flip_open"),
-        ],
+        orders=[IntendedOrder(flip_side, abs(delta), "flip")],
         target_qty=target_qty_signed,
         delta=delta,
     )

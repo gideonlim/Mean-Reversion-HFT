@@ -70,21 +70,30 @@ def test_scale_down_long_single_order():
     assert d.orders[0].side == OrderSide.SELL and d.orders[0].qty == 5
 
 
-def test_flip_long_to_short_two_orders():
+def test_flip_long_to_short_single_order():
+    """Flip long->short emits ONE order for |delta| shares (close + open in one).
+
+    Two separate orders fail because Alpaca holds shares for the close order,
+    leaving 0 available for the open order. Single order avoids the issue.
+    """
     d = decide_transition(signal=-1, current_qty_signed=10, target_abs_qty=8, shortable=True)
     assert d.transition == "flip"
-    assert len(d.orders) == 2
-    assert d.orders[0].side == OrderSide.SELL and d.orders[0].qty == 10 and d.orders[0].action == "flip_close"
-    assert d.orders[1].side == OrderSide.SELL and d.orders[1].qty == 8 and d.orders[1].action == "flip_open"
+    assert len(d.orders) == 1
+    assert d.orders[0].side == OrderSide.SELL
+    assert d.orders[0].qty == 18  # close 10 + open 8
+    assert d.orders[0].action == "flip"
     assert d.target_qty == -8 and d.delta == -18
 
 
-def test_flip_short_to_long_two_orders():
+def test_flip_short_to_long_single_order():
+    """Flip short->long emits ONE BUY for |delta| shares."""
     d = decide_transition(signal=1, current_qty_signed=-10, target_abs_qty=12, shortable=True)
     assert d.transition == "flip"
-    assert len(d.orders) == 2
-    assert d.orders[0].side == OrderSide.BUY and d.orders[0].qty == 10 and d.orders[0].action == "flip_close"
-    assert d.orders[1].side == OrderSide.BUY and d.orders[1].qty == 12 and d.orders[1].action == "flip_open"
+    assert len(d.orders) == 1
+    assert d.orders[0].side == OrderSide.BUY
+    assert d.orders[0].qty == 22  # close 10 + open 12
+    assert d.orders[0].action == "flip"
+    assert d.target_qty == 12 and d.delta == 22
 
 
 # ---- Shortable-skip path ----------------------------------------------
