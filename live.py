@@ -27,7 +27,7 @@ from pathlib import Path
 from alpaca.common.exceptions import APIError
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import OrderSide
+from alpaca.trading.enums import OrderSide, PositionIntent
 from dotenv import load_dotenv
 
 from broker import Broker
@@ -40,7 +40,8 @@ from strategy import signal_from_lag
 class IntendedOrder:
     side: OrderSide
     qty: int
-    action: str  # "open" | "scale" | "flip" | "shortable_skip_close"
+    action: str  # "open" | "scale" | "flip_close" | "flip_open" | "shortable_skip_close"
+    position_intent: PositionIntent | None = None  # required for flip_open to bypass held_for_orders
 
 
 @dataclass
@@ -65,7 +66,10 @@ def decide_transition(
         if current_qty_signed > 0:
             return Decision(
                 transition="shortable_skip",
-                orders=[IntendedOrder(OrderSide.SELL, current_qty_signed, "shortable_skip_close")],
+                orders=[IntendedOrder(
+                    OrderSide.SELL, current_qty_signed, "shortable_skip_close",
+                    position_intent=PositionIntent.SELL_TO_CLOSE,
+                )],
                 target_qty=0,
                 delta=-current_qty_signed,
             )
@@ -78,27 +82,49 @@ def decide_transition(
         return Decision(transition="no_op", target_qty=target_qty_signed, delta=0)
 
     if current_qty_signed * target_qty_signed >= 0:
+        # Same direction (or one is 0): single net-delta order.
         side = OrderSide.BUY if delta > 0 else OrderSide.SELL
         action = "open" if current_qty_signed == 0 else "scale"
+        intent = _intent_for_same_side(current_qty_signed, target_qty_signed, side)
         return Decision(
             transition=action,
-            orders=[IntendedOrder(side, abs(delta), action)],
+            orders=[IntendedOrder(side, abs(delta), action, position_intent=intent)],
             target_qty=target_qty_signed,
             delta=delta,
         )
 
-    # Flip long->short or short->long: both legs are always the SAME side (we cross
-    # zero in one direction). Combine into ONE order — Alpaca holds shares for any
-    # pending close order, so a separate open order would be rejected with
-    # "insufficient qty available". The single combined order closes the existing
-    # position and opens the new one atomically when it fills.
-    flip_side = OrderSide.SELL if delta < 0 else OrderSide.BUY
+    # Flip long->short or short->long: TWO orders with explicit position_intent.
+    # A single SELL of |delta| fails because Alpaca won't oversell beyond existing
+    # shares. Two separate orders without position_intent also fail because the
+    # close order holds shares (held_for_orders), leaving the open order with 0
+    # available. Tagging flip_open with SELL_TO_OPEN / BUY_TO_OPEN tells Alpaca
+    # it's a fresh short/long sale, bypassing the held_for_orders check.
+    close_side = OrderSide.SELL if current_qty_signed > 0 else OrderSide.BUY
+    open_side = OrderSide.BUY if target_qty_signed > 0 else OrderSide.SELL
+    close_intent = PositionIntent.SELL_TO_CLOSE if close_side == OrderSide.SELL else PositionIntent.BUY_TO_CLOSE
+    open_intent = PositionIntent.BUY_TO_OPEN if open_side == OrderSide.BUY else PositionIntent.SELL_TO_OPEN
     return Decision(
         transition="flip",
-        orders=[IntendedOrder(flip_side, abs(delta), "flip")],
+        orders=[
+            IntendedOrder(close_side, abs(current_qty_signed), "flip_close", position_intent=close_intent),
+            IntendedOrder(open_side, abs(target_qty_signed), "flip_open", position_intent=open_intent),
+        ],
         target_qty=target_qty_signed,
         delta=delta,
     )
+
+
+def _intent_for_same_side(current: int, target: int, side: OrderSide) -> PositionIntent:
+    """Compute position_intent when current and target are on the same side of 0."""
+    if current == 0:
+        # Opening from flat
+        return PositionIntent.BUY_TO_OPEN if side == OrderSide.BUY else PositionIntent.SELL_TO_OPEN
+    # Scaling existing position: did the magnitude grow or shrink?
+    if abs(target) > abs(current):
+        # Adding to position
+        return PositionIntent.BUY_TO_OPEN if side == OrderSide.BUY else PositionIntent.SELL_TO_OPEN
+    # Reducing position (target_abs < current_abs)
+    return PositionIntent.SELL_TO_CLOSE if side == OrderSide.SELL else PositionIntent.BUY_TO_CLOSE
 
 
 def setup_logging() -> logging.Logger:
@@ -278,7 +304,8 @@ def _process_symbol(
                 submitted_coids.append(coid)
                 continue
             try:
-                o = broker.submit_moc(symbol, intended.qty, intended.side, coid)
+                o = broker.submit_moc(symbol, intended.qty, intended.side, coid,
+                                     position_intent=intended.position_intent)
                 submitted_ids.append(o.id)
                 submitted_coids.append(o.client_order_id)
                 log.info("submitted: side=%s qty=%d sym=%s coid=%s id=%s",

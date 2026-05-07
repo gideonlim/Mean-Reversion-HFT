@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
-from alpaca.trading.enums import OrderSide
+from alpaca.trading.enums import OrderSide, PositionIntent
 
 import data as data_module
 from broker import Broker, MOC_WINDOW_END_MIN_BEFORE_CLOSE, MOC_WINDOW_START_MIN_BEFORE_CLOSE
@@ -33,6 +33,7 @@ def test_open_long_from_flat():
     assert d.transition == "open"
     assert len(d.orders) == 1
     assert d.orders[0].side == OrderSide.BUY and d.orders[0].qty == 10
+    assert d.orders[0].position_intent == PositionIntent.BUY_TO_OPEN
     assert d.target_qty == 10 and d.delta == 10
 
 
@@ -41,6 +42,7 @@ def test_open_short_from_flat():
     assert d.transition == "open"
     assert len(d.orders) == 1
     assert d.orders[0].side == OrderSide.SELL and d.orders[0].qty == 8
+    assert d.orders[0].position_intent == PositionIntent.SELL_TO_OPEN
     assert d.target_qty == -8 and d.delta == -8
 
 
@@ -61,6 +63,7 @@ def test_scale_up_long_single_order():
     assert d.transition == "scale"
     assert len(d.orders) == 1
     assert d.orders[0].side == OrderSide.BUY and d.orders[0].qty == 5
+    assert d.orders[0].position_intent == PositionIntent.BUY_TO_OPEN  # adding to long
 
 
 def test_scale_down_long_single_order():
@@ -68,31 +71,48 @@ def test_scale_down_long_single_order():
     assert d.transition == "scale"
     assert len(d.orders) == 1
     assert d.orders[0].side == OrderSide.SELL and d.orders[0].qty == 5
+    assert d.orders[0].position_intent == PositionIntent.SELL_TO_CLOSE  # reducing long
 
 
-def test_flip_long_to_short_single_order():
-    """Flip long->short emits ONE order for |delta| shares (close + open in one).
+def test_flip_long_to_short_two_orders_with_intent():
+    """Flip long->short emits TWO orders: close existing long, open new short.
 
-    Two separate orders fail because Alpaca holds shares for the close order,
-    leaving 0 available for the open order. Single order avoids the issue.
+    A single SELL of |delta| fails because Alpaca won't oversell beyond existing
+    shares. Two orders without position_intent fail because the close holds
+    shares, leaving the open order with 0 available. Tagging flip_open with
+    SELL_TO_OPEN bypasses the held_for_orders check.
     """
     d = decide_transition(signal=-1, current_qty_signed=10, target_abs_qty=8, shortable=True)
     assert d.transition == "flip"
-    assert len(d.orders) == 1
+    assert len(d.orders) == 2
+    # Close the existing long
     assert d.orders[0].side == OrderSide.SELL
-    assert d.orders[0].qty == 18  # close 10 + open 8
-    assert d.orders[0].action == "flip"
+    assert d.orders[0].qty == 10
+    assert d.orders[0].action == "flip_close"
+    assert d.orders[0].position_intent == PositionIntent.SELL_TO_CLOSE
+    # Open the new short
+    assert d.orders[1].side == OrderSide.SELL
+    assert d.orders[1].qty == 8
+    assert d.orders[1].action == "flip_open"
+    assert d.orders[1].position_intent == PositionIntent.SELL_TO_OPEN
     assert d.target_qty == -8 and d.delta == -18
 
 
-def test_flip_short_to_long_single_order():
-    """Flip short->long emits ONE BUY for |delta| shares."""
+def test_flip_short_to_long_two_orders_with_intent():
+    """Flip short->long emits TWO orders with BUY_TO_CLOSE / BUY_TO_OPEN intents."""
     d = decide_transition(signal=1, current_qty_signed=-10, target_abs_qty=12, shortable=True)
     assert d.transition == "flip"
-    assert len(d.orders) == 1
+    assert len(d.orders) == 2
+    # Close the existing short
     assert d.orders[0].side == OrderSide.BUY
-    assert d.orders[0].qty == 22  # close 10 + open 12
-    assert d.orders[0].action == "flip"
+    assert d.orders[0].qty == 10
+    assert d.orders[0].action == "flip_close"
+    assert d.orders[0].position_intent == PositionIntent.BUY_TO_CLOSE
+    # Open the new long
+    assert d.orders[1].side == OrderSide.BUY
+    assert d.orders[1].qty == 12
+    assert d.orders[1].action == "flip_open"
+    assert d.orders[1].position_intent == PositionIntent.BUY_TO_OPEN
     assert d.target_qty == 12 and d.delta == 22
 
 

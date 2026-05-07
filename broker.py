@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import OrderSide, QueryOrderStatus, TimeInForce
+from alpaca.trading.enums import OrderSide, PositionIntent, QueryOrderStatus, TimeInForce
 from alpaca.trading.requests import GetOrdersRequest, MarketOrderRequest
 
 from config import ET
@@ -133,8 +133,13 @@ class Broker:
         qty: int,
         side: OrderSide,
         client_order_id: str,
+        position_intent: PositionIntent | None = None,
     ) -> SubmittedOrder:
-        """Submit a market-on-close order. qty must be a positive whole number."""
+        """Submit a market-on-close order. qty must be a positive whole number.
+
+        position_intent disambiguates close-vs-open on same-side flips so the
+        broker doesn't reject the open leg with held_for_orders=existing_qty.
+        """
         if qty <= 0:
             raise ValueError(f"submit_moc qty must be > 0, got {qty}")
         req = MarketOrderRequest(
@@ -143,6 +148,7 @@ class Broker:
             side=side,
             time_in_force=TimeInForce.CLS,
             client_order_id=client_order_id,
+            position_intent=position_intent,
         )
         o = self._client.submit_order(order_data=req)
         return SubmittedOrder(
