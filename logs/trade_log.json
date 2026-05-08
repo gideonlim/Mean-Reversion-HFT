@@ -1711,5 +1711,73 @@
         "client_order_id": "meanrev-2026-05-08-SPY-scale"
       }
     ]
+  },
+  {
+    "timestamp": "2026-05-08T15:59:55.012492-04:00",
+    "et_date": "2026-05-08",
+    "label": "pre",
+    "account": {
+      "equity": 50735.42,
+      "cash": 41150.52,
+      "buying_power": 53545.3,
+      "portfolio_value": 50735.42
+    },
+    "positions": [
+      {
+        "symbol": "SPY",
+        "side": "long",
+        "qty": 13,
+        "avg_entry_price": 723.73,
+        "market_value": 9585.16,
+        "unrealized_pl": 176.67,
+        "unrealized_plpc": 0.01878
+      }
+    ],
+    "open_orders": [
+      {
+        "created_at": "2026-05-08 18:45:18",
+        "symbol": "SPY",
+        "side": "buy",
+        "qty": 52,
+        "filled_qty": 0,
+        "time_in_force": "cls",
+        "status": "new",
+        "client_order_id": "meanrev-2026-05-08-SPY-scale"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-05-08T15:59:56.431321-04:00",
+    "et_date": "2026-05-08",
+    "label": "post",
+    "account": {
+      "equity": 50735.81,
+      "cash": 41150.52,
+      "buying_power": 53545.17,
+      "portfolio_value": 50735.81
+    },
+    "positions": [
+      {
+        "symbol": "SPY",
+        "side": "long",
+        "qty": 13,
+        "avg_entry_price": 723.73,
+        "market_value": 9585.225,
+        "unrealized_pl": 176.735,
+        "unrealized_plpc": 0.01878
+      }
+    ],
+    "open_orders": [
+      {
+        "created_at": "2026-05-08 18:45:18",
+        "symbol": "SPY",
+        "side": "buy",
+        "qty": 52,
+        "filled_qty": 0,
+        "time_in_force": "cls",
+        "status": "new",
+        "client_order_id": "meanrev-2026-05-08-SPY-scale"
+      }
+    ]
   }
 ]
