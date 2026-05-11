@@ -1,0 +1,11 @@
+created_at,submitted_at,filled_at,symbol,side,qty,filled_qty,time_in_force,type,status,limit_price,filled_avg_price,client_order_id,id
+2026-04-29 18:55:07,2026-04-29 18:55:07,2026-04-29 19:59:58,SPY,buy,66,25,cls,market,expired,,711.4792,meanrev-2026-04-29-SPY-open,1f8e4b8d-7496-476c-874d-da70359cdc10
+2026-04-30 18:52:07,2026-04-30 18:52:07,2026-04-30 19:59:58,SPY,buy,18,18,cls,market,filled,,718.99,meanrev-2026-04-30-SPY-scale,13f377fb-c5ba-4146-b7d7-26c07add29f2
+2026-05-01 17:56:44,2026-05-01 17:56:44,,SPY,sell,43,0,cls,market,canceled,,,meanrev-2026-05-01-SPY-flip_close,68e6da50-fdb1-44fa-bee3-21540b83b779
+2026-05-02 00:54:48,2026-05-02 00:54:48,,SPY,sell,43,0,day,market,canceled,,,1bfab00c-09df-483e-ac21-2b58f8b78b1d,580cef8b-bdf3-4066-9d58-48ef7ab09281
+2026-05-02 01:00:30,2026-05-02 01:00:30,,SPY,sell,43,0,day,market,canceled,,,bf4539bf-8b7e-47a1-8e01-9fa0f4ce8fe2,9206d3f2-c70f-4a25-a210-5ace2c4900a5
+2026-05-04 19:05:01,2026-05-04 19:05:01,2026-05-04 19:59:56,SPY,sell,43,43,cls,market,filled,,718.01,meanrev-2026-05-04-SPY-flip_close,930de63d-cb5f-46a4-9cfa-88c2ece2f15d
+2026-05-05 18:53:03,2026-05-05 18:53:03,2026-05-05 19:59:57,SPY,buy,66,66,cls,market,filled,,723.73,meanrev-2026-05-05-SPY-open,ba748c74-1711-41d9-80df-526ea0caf499
+2026-05-07 17:45:13,2026-05-07 17:45:13,2026-05-07 19:59:59,SPY,sell,66,53,cls,market,expired,,731.53,meanrev-2026-05-07-SPY-flip_close,a1a051f9-4512-4c31-a867-7cbbcbe8642e
+2026-05-08 18:45:18,2026-05-08 18:45:18,2026-05-08 19:59:58,SPY,buy,52,52,cls,market,filled,,737.36,meanrev-2026-05-08-SPY-scale,97fd8a17-d4af-4178-9040-1fda31475766
+2026-05-11 17:52:34,2026-05-11 17:52:34,2026-05-11 19:59:58,SPY,sell,65,48,cls,market,expired,,739.06,meanrev-2026-05-11-SPY-flip_close,de25884d-adef-4963-b146-d82eada249f5
