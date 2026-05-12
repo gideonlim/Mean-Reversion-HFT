@@ -2305,5 +2305,31 @@
         "client_order_id": "meanrev-2026-05-12-SPY-flip_close"
       }
     ]
+  },
+  {
+    "timestamp": "2026-05-12T17:16:04.231792-04:00",
+    "et_date": "2026-05-12",
+    "label": "pre",
+    "account": {
+      "equity": 50829.74,
+      "cash": 50829.74,
+      "buying_power": 101659.48,
+      "portfolio_value": 50829.74
+    },
+    "positions": [],
+    "open_orders": []
+  },
+  {
+    "timestamp": "2026-05-12T17:16:05.903827-04:00",
+    "et_date": "2026-05-12",
+    "label": "post",
+    "account": {
+      "equity": 50829.74,
+      "cash": 50829.74,
+      "buying_power": 101659.48,
+      "portfolio_value": 50829.74
+    },
+    "positions": [],
+    "open_orders": []
   }
 ]
