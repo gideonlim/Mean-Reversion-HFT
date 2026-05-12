@@ -101,11 +101,14 @@ already ran, etc.):
 | 0 → ±qty | open | 1 MOC |
 | ±qty → ±qty (same sign) | scale | 1 MOC for the delta |
 | ±qty → ±qty (same value) | no-op | 0 |
-| ±qty → ∓qty (sign flip) | flip | 2 MOCs (close + open) |
+| ±qty → ∓qty (sign flip) | flip | 1 MOC (close only — open defers to next session) |
 | signal=-1 + not shortable | skip | force-close any long, stay flat |
 
-Single net-delta order is preferred everywhere except sign flips, where
-Alpaca rejects "reversing orders" and we must submit close + open separately.
+Single net-delta order everywhere. On sign flips, Alpaca rejects opening the
+opposite side while the close MOC still pins the position (position_intent
+validates intent, it doesn't bypass the size check), so the flip is split
+across two sessions: today's close lands the position at 0, and tomorrow's
+run opens the new direction cleanly from flat.
 
 8. **Submit** with `client_order_id = meanrev-<ET_date>-<symbol>-<action>`.
    Deterministic and ET-dated, so reruns reject as duplicates server-side.

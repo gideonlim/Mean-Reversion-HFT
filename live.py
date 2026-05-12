@@ -7,7 +7,7 @@ State machine:
   4. Cancel any orphan orders for the symbol
   5. Compute signal from last 2 fully-closed daily bars (today's partial bar excluded)
   6. Read current position + account cash
-  7. Decide transition (single net-delta order, or close+open flip)
+  7. Decide transition (single net-delta order; flip days close-only and open next session)
   8. Submit MOC orders with deterministic ET-dated client_order_id
   9. Log JSON DECISION line + write marker file
 
@@ -30,7 +30,7 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, PositionIntent
 from dotenv import load_dotenv
 
-from broker import Broker
+from broker import Broker, PositionState
 from config import SETTINGS, et_now, et_today
 from data import last_two_closed_bars
 from strategy import signal_from_lag
@@ -40,8 +40,8 @@ from strategy import signal_from_lag
 class IntendedOrder:
     side: OrderSide
     qty: int
-    action: str  # "open" | "scale" | "flip_close" | "flip_open" | "shortable_skip_close"
-    position_intent: PositionIntent | None = None  # required for flip_open to bypass held_for_orders
+    action: str  # "open" | "scale" | "flip_close" | "shortable_skip_close"
+    position_intent: PositionIntent | None = None  # disambiguates close-vs-open on same-side trades
 
 
 @dataclass
@@ -93,25 +93,39 @@ def decide_transition(
             delta=delta,
         )
 
-    # Flip long->short or short->long: TWO orders with explicit position_intent.
-    # A single SELL of |delta| fails because Alpaca won't oversell beyond existing
-    # shares. Two separate orders without position_intent also fail because the
-    # close order holds shares (held_for_orders), leaving the open order with 0
-    # available. Tagging flip_open with SELL_TO_OPEN / BUY_TO_OPEN tells Alpaca
-    # it's a fresh short/long sale, bypassing the held_for_orders check.
+    # Flip long->short or short->long: close-only on the flip day.
+    # Alpaca rejects a same-session open of the opposite side while the close
+    # MOC still holds the position — position_intent SELL_TO_OPEN / BUY_TO_OPEN
+    # does NOT bypass the size check (it only validates intent against the
+    # broker-inferred operation). The open leg will be submitted on the next
+    # session, when current_qty is genuinely 0 and the open submits cleanly
+    # as a fresh position.
     close_side = OrderSide.SELL if current_qty_signed > 0 else OrderSide.BUY
-    open_side = OrderSide.BUY if target_qty_signed > 0 else OrderSide.SELL
-    close_intent = PositionIntent.SELL_TO_CLOSE if close_side == OrderSide.SELL else PositionIntent.BUY_TO_CLOSE
-    open_intent = PositionIntent.BUY_TO_OPEN if open_side == OrderSide.BUY else PositionIntent.SELL_TO_OPEN
+    close_intent = (
+        PositionIntent.SELL_TO_CLOSE if close_side == OrderSide.SELL
+        else PositionIntent.BUY_TO_CLOSE
+    )
     return Decision(
         transition="flip",
         orders=[
             IntendedOrder(close_side, abs(current_qty_signed), "flip_close", position_intent=close_intent),
-            IntendedOrder(open_side, abs(target_qty_signed), "flip_open", position_intent=open_intent),
         ],
-        target_qty=target_qty_signed,
-        delta=delta,
+        target_qty=0,
+        delta=-current_qty_signed,
     )
+
+
+def _order_reduces_position(intended: IntendedOrder, position: PositionState) -> bool:
+    """True if this order transacts existing inventory (SELL on long / BUY on short).
+
+    qty_available bounds these operations; opening orders (SELL_TO_OPEN /
+    BUY_TO_OPEN) are bounded by buying_power instead and aren't gated here.
+    """
+    if intended.side == OrderSide.SELL and position.signed_qty > 0:
+        return True
+    if intended.side == OrderSide.BUY and position.signed_qty < 0:
+        return True
+    return False
 
 
 def _intent_for_same_side(current: int, target: int, side: OrderSide) -> PositionIntent:
@@ -278,7 +292,8 @@ def _process_symbol(
         log_return_lag_1 = closed.log_return_lag_1
         signal = signal_from_lag(log_return_lag_1)
 
-        current_qty = broker.get_position_signed_qty(symbol)
+        position_state = broker.get_position_state(symbol)
+        current_qty = position_state.signed_qty
         target_abs_qty = max(int(equity * SETTINGS.POSITION_FRACTION * weight / closed.prev_close), 0)
 
         shortable = asset.shortable and asset.easy_to_borrow and not SETTINGS.LONG_ONLY
@@ -298,6 +313,23 @@ def _process_symbol(
         submitted_coids: list[str] = []
         for intended in decision.orders:
             coid = f"meanrev-{et_date.isoformat()}-{symbol}-{intended.action}"
+
+            # Pre-flight: a SELL on a long (or BUY on a short) is bounded by
+            # qty_available. When a previous run's close MOC is still pending,
+            # all shares are held_for_orders and qty_available is 0 — the
+            # broker would reject this submission with a position-intent /
+            # insufficient-qty error. Skip cleanly instead of failing.
+            if _order_reduces_position(intended, position_state) and position_state.qty_available < intended.qty:
+                log.warning(
+                    "%s %s %d (action=%s) skipped: qty_available=%d < intended %d "
+                    "(signed_qty=%d, likely held by an existing pending order)",
+                    symbol, intended.side.value, intended.qty, intended.action,
+                    position_state.qty_available, intended.qty, position_state.signed_qty,
+                )
+                rec.setdefault("error", f"qty_available={position_state.qty_available} < {intended.qty}")
+                rec.setdefault("error_kind", "insufficient_qty")
+                continue
+
             if dry_run:
                 log.info("DRY_RUN would submit: side=%s qty=%d sym=%s coid=%s",
                          intended.side.value, intended.qty, symbol, coid)

@@ -26,7 +26,7 @@ def _apply_fills(current_qty: int, orders: list[IntendedOrder]) -> int:
 # ---- Scenario 1: bidirectional week with both flip directions -----------
 
 def test_week_open_noop_scaleup_flip_both_directions():
-    """Mon: open long. Tue: no-op. Wed: scale up. Thu: flip to short. Fri: flip to long."""
+    """Mon: open long. Tue: no-op. Wed: scale up. Thu: flip-close to flat. Fri: open short."""
     qty = 0
 
     # Mon — flat -> long
@@ -53,25 +53,23 @@ def test_week_open_noop_scaleup_flip_both_directions():
     qty = _apply_fills(qty, d.orders)
     assert qty == 80
 
-    # Thu — flip long -> short
+    # Thu — flip long -> short: only the close lands today; short opens next session.
     d = decide_transition(signal=-1, current_qty_signed=qty, target_abs_qty=66, shortable=True)
     assert d.transition == "flip"
     assert [(o.side, o.qty, o.action, o.position_intent) for o in d.orders] == [
         (OrderSide.SELL, 80, "flip_close", PositionIntent.SELL_TO_CLOSE),
-        (OrderSide.SELL, 66, "flip_open", PositionIntent.SELL_TO_OPEN),
+    ]
+    qty = _apply_fills(qty, d.orders)
+    assert qty == 0
+
+    # Fri — flat -> short (the deferred open from yesterday's flip)
+    d = decide_transition(signal=-1, current_qty_signed=qty, target_abs_qty=66, shortable=True)
+    assert d.transition == "open"
+    assert [(o.side, o.qty, o.action, o.position_intent) for o in d.orders] == [
+        (OrderSide.SELL, 66, "open", PositionIntent.SELL_TO_OPEN),
     ]
     qty = _apply_fills(qty, d.orders)
     assert qty == -66
-
-    # Fri — flip short -> long
-    d = decide_transition(signal=1, current_qty_signed=qty, target_abs_qty=70, shortable=True)
-    assert d.transition == "flip"
-    assert [(o.side, o.qty, o.action, o.position_intent) for o in d.orders] == [
-        (OrderSide.BUY, 66, "flip_close", PositionIntent.BUY_TO_CLOSE),
-        (OrderSide.BUY, 70, "flip_open", PositionIntent.BUY_TO_OPEN),
-    ]
-    qty = _apply_fills(qty, d.orders)
-    assert qty == 70
 
 
 # ---- Scenario 2: LONG_ONLY week (shortable=False the whole time) --------
@@ -138,26 +136,26 @@ def test_week_scale_up_and_down_both_directions():
     qty = _apply_fills(qty, d.orders)
     assert qty == 80
 
-    # Wed — flip long -> short (smaller target)
+    # Wed — flip long -> short: close only; short opens next session
     d = decide_transition(signal=-1, current_qty_signed=qty, target_abs_qty=50, shortable=True)
     assert d.transition == "flip"
     qty = _apply_fills(qty, d.orders)
-    assert qty == -50
+    assert qty == 0
 
-    # Thu — scale UP short (more negative)
-    d = decide_transition(signal=-1, current_qty_signed=qty, target_abs_qty=70, shortable=True)
-    assert d.transition == "scale"
+    # Thu — flat -> short (deferred open from yesterday's flip)
+    d = decide_transition(signal=-1, current_qty_signed=qty, target_abs_qty=50, shortable=True)
+    assert d.transition == "open"
     assert [(o.side, o.qty, o.action, o.position_intent) for o in d.orders] == [
-        (OrderSide.SELL, 20, "scale", PositionIntent.SELL_TO_OPEN),  # adding to short = opening
+        (OrderSide.SELL, 50, "open", PositionIntent.SELL_TO_OPEN),
     ]
     qty = _apply_fills(qty, d.orders)
-    assert qty == -70
+    assert qty == -50
 
     # Fri — scale DOWN short (less negative, partial close)
     d = decide_transition(signal=-1, current_qty_signed=qty, target_abs_qty=40, shortable=True)
     assert d.transition == "scale"
     assert [(o.side, o.qty, o.action, o.position_intent) for o in d.orders] == [
-        (OrderSide.BUY, 30, "scale", PositionIntent.BUY_TO_CLOSE),  # reducing short = closing
+        (OrderSide.BUY, 10, "scale", PositionIntent.BUY_TO_CLOSE),  # reducing short = closing
     ]
     qty = _apply_fills(qty, d.orders)
     assert qty == -40
@@ -166,7 +164,9 @@ def test_week_scale_up_and_down_both_directions():
 # ---- Scenario 4: choppy week (signal flips every day) -------------------
 
 def test_week_choppy_signal_flips_every_day():
-    """Worst-case mean-reversion: signal flips every single day, max friction."""
+    """Worst-case mean-reversion: signal flips every single day. Each flip closes
+    today and the new direction opens the next session, so the position
+    alternates between flat and one-side every day rather than ping-ponging."""
     qty = 0
 
     # Mon — open long
@@ -175,29 +175,29 @@ def test_week_choppy_signal_flips_every_day():
     qty = _apply_fills(qty, d.orders)
     assert qty == 50
 
-    # Tue — flip to short
+    # Tue — flip to short signal: close long today, short opens next session
     d = decide_transition(signal=-1, current_qty_signed=qty, target_abs_qty=50, shortable=True)
     assert d.transition == "flip"
-    assert len(d.orders) == 2
+    assert len(d.orders) == 1
     qty = _apply_fills(qty, d.orders)
-    assert qty == -50
+    assert qty == 0
 
-    # Wed — flip back to long
+    # Wed — signal flipped back to long: but we're flat, so this is just open long
     d = decide_transition(signal=1, current_qty_signed=qty, target_abs_qty=50, shortable=True)
-    assert d.transition == "flip"
-    assert len(d.orders) == 2
+    assert d.transition == "open"
+    assert len(d.orders) == 1
     qty = _apply_fills(qty, d.orders)
     assert qty == 50
 
-    # Thu — flip to short again
+    # Thu — flip to short again: close long today, short opens next session
     d = decide_transition(signal=-1, current_qty_signed=qty, target_abs_qty=50, shortable=True)
     assert d.transition == "flip"
     qty = _apply_fills(qty, d.orders)
-    assert qty == -50
+    assert qty == 0
 
-    # Fri — flip to long once more
+    # Fri — long signal again, flat -> open long
     d = decide_transition(signal=1, current_qty_signed=qty, target_abs_qty=50, shortable=True)
-    assert d.transition == "flip"
+    assert d.transition == "open"
     qty = _apply_fills(qty, d.orders)
     assert qty == 50
 
@@ -205,40 +205,42 @@ def test_week_choppy_signal_flips_every_day():
 # ---- Scenario 5: realistic SPY week recreating the bug we just fixed ----
 
 def test_week_recreates_held_for_orders_bug_scenario():
-    """Recreate the exact state from May 6 production: long 66, signal flips to
-    short with target -66. Verify two orders are emitted with correct intents.
-    The fix is *not* a single SELL 132 (Alpaca rejects); it's two orders with
-    SELL_TO_CLOSE + SELL_TO_OPEN.
+    """Recreate the May 11 production state: long 65, signal flips to short.
+
+    The original design tried two orders (close + flip_open with SELL_TO_OPEN),
+    but Alpaca rejects the open leg in the same MOC session because the close
+    still pins the long position — position_intent validates intent, it does
+    NOT bypass the size check. The fix is to defer the open to the next session:
+    today we emit only the close, and tomorrow's run opens the short cleanly
+    from a flat position.
     """
-    qty = 66  # carrying long position from previous day
-    target_abs = 66
+    qty = 65  # carrying long position from previous day
+    target_abs = 65
 
     d = decide_transition(signal=-1, current_qty_signed=qty, target_abs_qty=target_abs, shortable=True)
 
     assert d.transition == "flip"
-    assert len(d.orders) == 2, f"flip MUST be 2 orders, not {len(d.orders)}"
+    assert len(d.orders) == 1, f"flip emits close-only, got {len(d.orders)} orders"
 
-    close, open_ = d.orders
-    # First order: close the existing 66-share long
+    (close,) = d.orders
     assert close.side == OrderSide.SELL
-    assert close.qty == 66
+    assert close.qty == 65
     assert close.action == "flip_close"
     assert close.position_intent == PositionIntent.SELL_TO_CLOSE
 
-    # Second order: open the new 66-share short. CRITICAL: position_intent must
-    # be SELL_TO_OPEN so Alpaca treats it as a fresh short and bypasses the
-    # held_for_orders=66 from the close order.
-    assert open_.side == OrderSide.SELL
-    assert open_.qty == 66
-    assert open_.action == "flip_open"
-    assert open_.position_intent == PositionIntent.SELL_TO_OPEN, (
-        "flip_open MUST be SELL_TO_OPEN — without this Alpaca rejects with "
-        "'insufficient qty available' because the close order holds all 66 shares"
-    )
-
-    # Sanity: applying both orders to qty=66 yields -66 (full short)
+    # Sanity: today's fill lands us flat
     final = _apply_fills(qty, d.orders)
-    assert final == -66
+    assert final == 0
+
+    # Next session: flat + signal still short -> opens the short cleanly
+    d2 = decide_transition(signal=-1, current_qty_signed=final, target_abs_qty=target_abs, shortable=True)
+    assert d2.transition == "open"
+    (open_,) = d2.orders
+    assert open_.side == OrderSide.SELL
+    assert open_.qty == 65
+    assert open_.position_intent == PositionIntent.SELL_TO_OPEN
+    final2 = _apply_fills(final, d2.orders)
+    assert final2 == -65
 
 
 # ---- Scenario 6: GHA cron fires repeatedly intra-day (idempotency) ------

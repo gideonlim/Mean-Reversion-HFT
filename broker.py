@@ -44,6 +44,20 @@ class AssetInfo:
 
 
 @dataclass
+class PositionState:
+    """Snapshot of a position used by the live runner.
+
+    signed_qty is the actual position size — positive long, negative short, 0 flat.
+    qty_available is the absolute share count free to transact right now: it goes
+    to 0 when shares are held_for_orders by a pending close, even though the
+    position itself is unchanged. Used as a pre-flight gate so we don't submit a
+    close-side order the broker is guaranteed to reject.
+    """
+    signed_qty: int
+    qty_available: int
+
+
+@dataclass
 class SubmittedOrder:
     id: str
     client_order_id: str
@@ -91,18 +105,31 @@ class Broker:
     def get_account_equity(self) -> float:
         return float(self._client.get_account().equity)
 
-    def get_position_signed_qty(self, symbol: str) -> int:
-        """Positive long, negative short, 0 flat. Handles 404 (no position) cleanly."""
+    def get_position_state(self, symbol: str) -> PositionState:
+        """Read the full position state — signed size and available-to-trade qty.
+
+        Both come from a single get_open_position call. Handles 404 (no position)
+        cleanly. signed_qty reflects the actual position size (positive long,
+        negative short); qty_available is whatever the broker reports as free to
+        transact (pinned to 0 when pending close orders hold the shares).
+        """
         try:
             pos = self._client.get_open_position(symbol)
         except APIError as e:
             if "position does not exist" in str(e).lower() or "404" in str(e):
-                return 0
+                return PositionState(signed_qty=0, qty_available=0)
             raise
-        qty = int(float(pos.qty_available if hasattr(pos, "qty_available") else pos.qty))
+        qty = int(float(pos.qty))
+        qty_available = (
+            int(float(pos.qty_available)) if hasattr(pos, "qty_available") else qty
+        )
         if str(getattr(pos, "side", "")).lower() == "short":
             qty = -qty
-        return qty
+        return PositionState(signed_qty=qty, qty_available=qty_available)
+
+    def get_position_signed_qty(self, symbol: str) -> int:
+        """Convenience: signed position size only. See get_position_state for the full state."""
+        return self.get_position_state(symbol).signed_qty
 
     # ---- Orders --------------------------------------------------------
 

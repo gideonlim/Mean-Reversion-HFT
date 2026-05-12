@@ -13,18 +13,33 @@ from unittest.mock import MagicMock
 from alpaca.trading.enums import OrderSide, PositionIntent
 
 import live
-from broker import AssetInfo
+from broker import AssetInfo, PositionState
 from data import ClosedBars
 from live import _process_symbol
 
 
-def _make_mocks(*, current_qty: int, prev_close: float, log_return: float, shortable: bool = True):
-    """Build a (broker, data_client, captured_calls) trio for _process_symbol."""
+def _make_mocks(
+    *,
+    current_qty: int,
+    prev_close: float,
+    log_return: float,
+    shortable: bool = True,
+    qty_available: int | None = None,
+):
+    """Build a (broker, data_client, captured_calls) trio for _process_symbol.
+
+    qty_available defaults to abs(current_qty) (no pending orders pinning shares).
+    Pass an explicit value to simulate retry scenarios where today's close MOC
+    is still pending.
+    """
     import math
     broker = MagicMock()
     broker.get_asset.return_value = AssetInfo(symbol="SPY", tradable=True, shortable=shortable, easy_to_borrow=shortable)
     broker.cancel_open_orders.return_value = 0
-    broker.get_position_signed_qty.return_value = current_qty
+    available = abs(current_qty) if qty_available is None else qty_available
+    broker.get_position_state.return_value = PositionState(
+        signed_qty=current_qty, qty_available=available,
+    )
     # Each submit_moc returns a SubmittedOrder-like
     submitted: list[dict] = []
 
@@ -83,11 +98,12 @@ def test_integration_open_long_from_flat_full_pipeline(monkeypatch):
     assert kwargs.get("keep_today") == "meanrev-2026-05-07"
 
 
-def test_integration_flip_long_to_short_submits_two_orders_with_intents(monkeypatch):
-    """Recreates the May 6 scenario: long position, signal flips to short.
+def test_integration_flip_long_to_short_submits_close_only(monkeypatch):
+    """Flip day: long->short emits ONLY the close leg.
 
-    Uses prev_close=719.69 so equity*0.95/prev_close yields exactly 66 shares
-    (matches production sizing).
+    Alpaca rejects same-session opening of the opposite side while the close
+    MOC still pins the position. The open is deferred to the next session,
+    when current_qty is 0 and the open submits cleanly as a fresh position.
     """
     broker, data_client, submitted, closed = _make_mocks(
         current_qty=66, prev_close=719.69, log_return=0.008,
@@ -103,21 +119,16 @@ def test_integration_flip_long_to_short_submits_two_orders_with_intents(monkeypa
     assert rec["transition"] == "flip"
     assert rec["signal"] == -1
     assert rec["current_qty"] == 66
-    assert rec["target_qty"] == -rec["target_abs_qty"]  # short of target_abs
-    assert rec["target_abs_qty"] >= 1
-    assert len(submitted) == 2
+    assert rec["target_qty"] == 0  # today's target is flat; short opens next session
+    assert rec["delta"] == -66
+    assert rec["target_abs_qty"] >= 1  # signal-driven size is still reported for visibility
+    assert len(submitted) == 1
 
     close = submitted[0]
     assert close["side"] == OrderSide.SELL
     assert close["qty"] == 66  # close the existing 66-share long
     assert close["coid"] == "meanrev-2026-05-07-SPY-flip_close"
     assert close["position_intent"] == PositionIntent.SELL_TO_CLOSE
-
-    open_ = submitted[1]
-    assert open_["side"] == OrderSide.SELL
-    assert open_["qty"] == rec["target_abs_qty"]
-    assert open_["coid"] == "meanrev-2026-05-07-SPY-flip_open"
-    assert open_["position_intent"] == PositionIntent.SELL_TO_OPEN  # the bug fix
 
 
 def test_integration_dry_run_skips_submission(monkeypatch):
@@ -154,6 +165,35 @@ def test_integration_long_only_skips_short_signal(monkeypatch):
     assert rec["transition"] == "shortable_skip"
     assert rec["signal"] == -1
     assert submitted == []
+
+
+def test_integration_skips_submission_when_qty_available_pinned_to_zero(monkeypatch):
+    """Pre-flight gate: a SELL on a long position is skipped (not submitted) when
+    qty_available is 0 — shares are held by an existing pending order.
+
+    Recreates the 2026-05-11 retry scenario: first run submitted flip_close, the
+    marker wasn't written (because the old flip_open leg failed), and the
+    scheduled retry sees position=long 65 with 65 shares held_for_orders.
+    Submitting again would be rejected by Alpaca with a position-intent error;
+    the gate skips cleanly and lets the marker get written.
+    """
+    broker, data_client, submitted, closed = _make_mocks(
+        current_qty=65, prev_close=737.62, log_return=0.008,
+        qty_available=0,  # entire long is held by today's pending flip_close
+    )
+    monkeypatch.setattr(live, "last_two_closed_bars", lambda *a, **k: closed)
+
+    rec = _process_symbol(
+        symbol="SPY", weight=1.0, equity=50000.0,
+        broker=broker, data_client=data_client,
+        et_date=date(2026, 5, 11), dry_run=False, log=logging.getLogger("test"),
+    )
+
+    # Decision was still computed (flip), but the close order was gated out.
+    assert rec["transition"] == "flip"
+    assert submitted == []
+    broker.submit_moc.assert_not_called()
+    assert rec["error_kind"] == "insufficient_qty"
 
 
 def test_integration_zero_weight_short_circuits(monkeypatch):

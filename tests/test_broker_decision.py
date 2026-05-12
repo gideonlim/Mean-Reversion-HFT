@@ -74,46 +74,34 @@ def test_scale_down_long_single_order():
     assert d.orders[0].position_intent == PositionIntent.SELL_TO_CLOSE  # reducing long
 
 
-def test_flip_long_to_short_two_orders_with_intent():
-    """Flip long->short emits TWO orders: close existing long, open new short.
+def test_flip_long_to_short_emits_close_only():
+    """Flip long->short emits ONLY the close leg; the open submits next session.
 
-    A single SELL of |delta| fails because Alpaca won't oversell beyond existing
-    shares. Two orders without position_intent fail because the close holds
-    shares, leaving the open order with 0 available. Tagging flip_open with
-    SELL_TO_OPEN bypasses the held_for_orders check.
+    Alpaca rejects a same-session SELL_TO_OPEN while a long is still held by a
+    pending close MOC (position_intent validates intent but doesn't bypass the
+    size check). The open leg is deferred to the next session when current_qty
+    is genuinely 0.
     """
     d = decide_transition(signal=-1, current_qty_signed=10, target_abs_qty=8, shortable=True)
     assert d.transition == "flip"
-    assert len(d.orders) == 2
-    # Close the existing long
+    assert len(d.orders) == 1
     assert d.orders[0].side == OrderSide.SELL
     assert d.orders[0].qty == 10
     assert d.orders[0].action == "flip_close"
     assert d.orders[0].position_intent == PositionIntent.SELL_TO_CLOSE
-    # Open the new short
-    assert d.orders[1].side == OrderSide.SELL
-    assert d.orders[1].qty == 8
-    assert d.orders[1].action == "flip_open"
-    assert d.orders[1].position_intent == PositionIntent.SELL_TO_OPEN
-    assert d.target_qty == -8 and d.delta == -18
+    assert d.target_qty == 0 and d.delta == -10
 
 
-def test_flip_short_to_long_two_orders_with_intent():
-    """Flip short->long emits TWO orders with BUY_TO_CLOSE / BUY_TO_OPEN intents."""
+def test_flip_short_to_long_emits_close_only():
+    """Flip short->long emits ONLY the close (BUY_TO_CLOSE); open defers to next session."""
     d = decide_transition(signal=1, current_qty_signed=-10, target_abs_qty=12, shortable=True)
     assert d.transition == "flip"
-    assert len(d.orders) == 2
-    # Close the existing short
+    assert len(d.orders) == 1
     assert d.orders[0].side == OrderSide.BUY
     assert d.orders[0].qty == 10
     assert d.orders[0].action == "flip_close"
     assert d.orders[0].position_intent == PositionIntent.BUY_TO_CLOSE
-    # Open the new long
-    assert d.orders[1].side == OrderSide.BUY
-    assert d.orders[1].qty == 12
-    assert d.orders[1].action == "flip_open"
-    assert d.orders[1].position_intent == PositionIntent.BUY_TO_OPEN
-    assert d.target_qty == 12 and d.delta == 22
+    assert d.target_qty == 0 and d.delta == 10
 
 
 # ---- Shortable-skip path ----------------------------------------------
