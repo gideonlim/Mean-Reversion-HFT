@@ -2781,5 +2781,18 @@
     },
     "positions": [],
     "open_orders": []
+  },
+  {
+    "timestamp": "2026-05-14T18:46:21.268408-04:00",
+    "et_date": "2026-05-14",
+    "label": "market_close",
+    "account": {
+      "equity": 51098.45,
+      "cash": 51098.45,
+      "buying_power": 102196.9,
+      "portfolio_value": 51098.45
+    },
+    "positions": [],
+    "open_orders": []
   }
 ]
