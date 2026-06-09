@@ -6226,5 +6226,51 @@
         "client_order_id": "meanrev-2026-06-09-SPY-scale"
       }
     ]
+  },
+  {
+    "timestamp": "2026-06-09T16:13:11.111263-04:00",
+    "et_date": "2026-06-09",
+    "label": "pre",
+    "account": {
+      "equity": 51274.15,
+      "cash": 99867.31,
+      "buying_power": 146784.81,
+      "portfolio_value": 51274.15
+    },
+    "positions": [
+      {
+        "symbol": "SPY",
+        "side": "short",
+        "qty": -66,
+        "avg_entry_price": 738.922727,
+        "market_value": -48593.16,
+        "unrealized_pl": 175.739982,
+        "unrealized_plpc": 0.0036
+      }
+    ],
+    "open_orders": []
+  },
+  {
+    "timestamp": "2026-06-09T16:13:12.342214-04:00",
+    "et_date": "2026-06-09",
+    "label": "post",
+    "account": {
+      "equity": 51274.15,
+      "cash": 99867.31,
+      "buying_power": 146784.81,
+      "portfolio_value": 51274.15
+    },
+    "positions": [
+      {
+        "symbol": "SPY",
+        "side": "short",
+        "qty": -66,
+        "avg_entry_price": 738.922727,
+        "market_value": -48593.16,
+        "unrealized_pl": 175.739982,
+        "unrealized_plpc": 0.0036
+      }
+    ],
+    "open_orders": []
   }
 ]
