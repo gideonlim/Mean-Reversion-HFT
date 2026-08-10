@@ -16612,5 +16612,51 @@
       }
     ],
     "open_orders": []
+  },
+  {
+    "timestamp": "2026-08-10T13:48:30.571118-04:00",
+    "et_date": "2026-08-10",
+    "label": "pre",
+    "account": {
+      "equity": 48870.41,
+      "cash": 99867.29,
+      "buying_power": 134285.38,
+      "portfolio_value": 48870.41
+    },
+    "positions": [
+      {
+        "symbol": "SPY",
+        "side": "short",
+        "qty": -66,
+        "avg_entry_price": 738.922727,
+        "market_value": -50996.88,
+        "unrealized_pl": -2227.980018,
+        "unrealized_plpc": -0.04568
+      }
+    ],
+    "open_orders": []
+  },
+  {
+    "timestamp": "2026-08-10T13:48:33.475711-04:00",
+    "et_date": "2026-08-10",
+    "label": "post",
+    "account": {
+      "equity": 48871.07,
+      "cash": 99867.29,
+      "buying_power": 134288.82,
+      "portfolio_value": 48871.07
+    },
+    "positions": [
+      {
+        "symbol": "SPY",
+        "side": "short",
+        "qty": -66,
+        "avg_entry_price": 738.922727,
+        "market_value": -50996.22,
+        "unrealized_pl": -2227.320018,
+        "unrealized_plpc": -0.04567
+      }
+    ],
+    "open_orders": []
   }
 ]
