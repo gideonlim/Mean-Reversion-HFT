@@ -19533,5 +19533,28 @@
       }
     ],
     "open_orders": []
+  },
+  {
+    "timestamp": "2026-08-19T09:35:25.271242-04:00",
+    "et_date": "2026-08-19",
+    "label": "market_open",
+    "account": {
+      "equity": 49039.37,
+      "cash": 99867.29,
+      "buying_power": 135163.98,
+      "portfolio_value": 49039.37
+    },
+    "positions": [
+      {
+        "symbol": "SPY",
+        "side": "short",
+        "qty": -66,
+        "avg_entry_price": 738.922727,
+        "market_value": -50827.92,
+        "unrealized_pl": -2059.020018,
+        "unrealized_plpc": -0.04222
+      }
+    ],
+    "open_orders": []
   }
 ]
